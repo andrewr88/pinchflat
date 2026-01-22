@@ -102,3 +102,58 @@
 
   <.button class="mt-10 mb-4 sm:mb-8 w-full sm:w-auto" rounding="rounded-lg">Save Settings</.button>
 </.simple_form>
+
+<section class="mt-8">
+  <div class="rounded-sm border border-stroke bg-white px-5 py-5 shadow-default dark:border-strokedark dark:bg-boxdark sm:px-7.5">
+    <h3 class="text-2xl text-black dark:text-white mb-4">
+      Cookie Management
+    </h3>
+    <p class="text-sm text-bodydark mb-4">
+      Paste your cookie contents here to update the cookies.txt file. This file is used by yt-dlp for authentication when downloading media.
+    </p>
+    <div x-data="{ cookieContent: '' }">
+      <.form
+        action={~p"/settings/save_cookies"}
+        method="post"
+        x-on:submit="setTimeout(() => { cookieContent = '' }, 100)"
+      >
+        <div class="mb-4">
+          <label for="cookie_content" class="block text-sm font-medium text-black dark:text-white mb-2">
+            Cookie Contents
+          </label>
+          <textarea
+            id="cookie_content"
+            name="cookie_content"
+            rows="10"
+            class="w-full rounded-lg border-[1.5px] border-stroke bg-transparent px-5 py-3 font-medium outline-none transition focus:border-primary active:border-primary disabled:cursor-default disabled:bg-whiter dark:border-form-strokedark dark:bg-form-input dark:text-white dark:focus:border-primary"
+            placeholder="Paste your cookie contents here..."
+            x-model="cookieContent"
+          ></textarea>
+        </div>
+        <div class="flex gap-3 mt-4">
+          <.button
+            type="submit"
+            class="w-full sm:w-auto"
+            rounding="rounded-lg"
+          >
+            Save Cookie
+          </.button>
+        </div>
+      </.form>
+      <.form
+        action={~p"/settings/validate_cookies"}
+        method="post"
+        class="mt-4"
+      >
+        <.button
+          type="submit"
+          class="w-full sm:w-auto"
+          rounding="rounded-lg"
+          color="bg-meta-3"
+        >
+          Validate Cookie
+        </.button>
+      </.form>
+    </div>
+  </div>
+</section>

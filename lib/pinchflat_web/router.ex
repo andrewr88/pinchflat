@@ -48,6 +48,8 @@ defmodule PinchflatWeb.Router do
     resources "/search", Searches.SearchController, only: [:show], singleton: true
 
     resources "/settings", Settings.SettingController, only: [:show, :update], singleton: true
+    post "/settings/save_cookies", Settings.SettingController, :save_cookies
+    post "/settings/validate_cookies", Settings.SettingController, :validate_cookies
     get "/app_info", Settings.SettingController, :app_info
     get "/download_logs", Settings.SettingController, :download_logs
 
