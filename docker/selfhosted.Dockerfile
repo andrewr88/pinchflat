@@ -20,7 +20,7 @@ RUN apt-get update -y && \
       git \
       curl && \
     # Node.js and Yarn
-    curl -sL https://deb.nodesource.com/setup_20.x -o nodesource_setup.sh && \
+    curl -sL https://deb.nodesource.com/setup_24.x -o nodesource_setup.sh && \
     bash nodesource_setup.sh && \
     apt-get install -y nodejs && \
     npm install -g yarn && \

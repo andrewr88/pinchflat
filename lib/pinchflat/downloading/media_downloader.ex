@@ -154,7 +154,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     end
   end
 
-  defp retry_download_without_sponsorblock(media_with_preloads, output_filepath) do
+  defp retry_download_without_sponsorblock(media_with_preloads, _output_filepath) do
     # Generate a new output filepath for the retry to avoid conflicts
     new_output_filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
     override_opts = [skip_sponsorblock: true]

@@ -145,7 +145,7 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
     QualityOptionBuilder.build(media_profile)
   end
 
-  defp sponsorblock_options(media_profile, override_opts \\ []) do
+  defp sponsorblock_options(media_profile, override_opts) do
     # Skip sponsorblock if explicitly requested in override_opts
     if Keyword.get(override_opts, :skip_sponsorblock, false) do
       []
