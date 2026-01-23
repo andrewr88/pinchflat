@@ -112,7 +112,7 @@
       Paste your cookie contents here to update the cookies.txt file. This file is used by yt-dlp for authentication when downloading media.
     </p>
     <div x-data="{ cookieContent: '' }">
-      <.form
+      <form
         action={~p"/settings/save_cookies"}
         method="post"
         x-on:submit="setTimeout(() => { cookieContent = '' }, 100)"
@@ -139,8 +139,8 @@
             Save Cookie
           </.button>
         </div>
-      </.form>
-      <.form
+      </form>
+      <form
         action={~p"/settings/validate_cookies"}
         method="post"
         class="mt-4"
@@ -153,7 +153,7 @@
         >
           Validate Cookie
         </.button>
-      </.form>
+      </form>
     </div>
   </div>
 </section>

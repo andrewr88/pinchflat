@@ -298,6 +298,176 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     end
   end
 
+  describe "download_for_media_item/3 when testing SponsorBlock retry" do
+    setup do
+      # Set up a media item with SponsorBlock enabled
+      profile = media_profile_fixture(%{
+        sponsorblock_behaviour: :mark,
+        sponsorblock_categories: ["sponsor", "intro", "outro"]
+      })
+      source = source_fixture(%{media_profile_id: profile.id})
+      media_item =
+        Repo.preload(
+          media_item_fixture(%{source_id: source.id}),
+          [:metadata, source: :media_profile]
+        )
+
+      stub(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, ""} end)
+
+      {:ok, %{media_item: media_item}}
+    end
+
+    test "retries download without SponsorBlock options when SponsorBlock error occurs", %{media_item: media_item} do
+      message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
+
+      expect(YtDlpRunnerMock, :run, 5, fn
+        # Initial download attempt with SponsorBlock (fails)
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, opts, _ot, _addl ->
+          # Verify SponsorBlock options are present in initial attempt
+          assert {:sponsorblock_mark, _} in opts
+          {:error, message, 1}
+
+        # Retry without SponsorBlock (succeeds)
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, opts, _ot, _addl ->
+          # Verify SponsorBlock options are NOT present in retry
+          refute Keyword.has_key?(opts, :sponsorblock_mark)
+          refute Keyword.has_key?(opts, :sponsorblock_remove)
+          {:ok, render_metadata(:media_metadata)}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+      end)
+
+      assert {:recovered, _media_item, ^message} = MediaDownloader.download_for_media_item(media_item)
+    end
+
+    test "successfully recovers from SponsorBlock error and updates media item", %{media_item: media_item} do
+      message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
+
+      expect(YtDlpRunnerMock, :run, 5, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, _addl ->
+          {:error, message, 1}
+
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, _addl ->
+          {:ok, render_metadata(:media_metadata)}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+      end)
+
+      assert {:recovered, updated_media_item, ^message} = MediaDownloader.download_for_media_item(media_item)
+
+      assert DateTime.diff(DateTime.utc_now(), updated_media_item.media_downloaded_at) < 2
+      assert String.ends_with?(updated_media_item.media_filepath, ".mkv")
+      assert updated_media_item.last_error == message
+    end
+
+    test "falls back to parse recovery if retry without SponsorBlock also fails", %{media_item: media_item} do
+      message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
+
+      expect(YtDlpRunnerMock, :run, 4, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, addl ->
+          [{:output_filepath, filepath} | _] = addl
+          # Write metadata to file for parse recovery fallback
+          File.write(filepath, render_metadata(:media_metadata))
+          {:error, message, 1}
+
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, _addl ->
+          # Retry also fails
+          {:error, "Some other error", 1}
+      end)
+
+      # Should fall back to parse recovery and succeed
+      assert {:recovered, _media_item, ^message} = MediaDownloader.download_for_media_item(media_item)
+    end
+
+    test "returns unrecoverable if retry fails and parse recovery also fails", %{media_item: media_item} do
+      message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
+
+      expect(YtDlpRunnerMock, :run, 4, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, _addl ->
+          # No metadata written, so parse recovery will fail
+          {:error, message, 1}
+
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, _addl ->
+          # Retry also fails
+          {:error, "Some other error", 1}
+      end)
+
+      assert {:error, :unrecoverable, ^message} = MediaDownloader.download_for_media_item(media_item)
+    end
+
+    test "handles unsuitable_for_download during retry gracefully", %{media_item: media_item} do
+      message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
+
+      expect(YtDlpRunnerMock, :run, 4, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, addl ->
+          [{:output_filepath, filepath} | _] = addl
+          # Write metadata to file for parse recovery fallback
+          File.write(filepath, render_metadata(:media_metadata))
+          {:error, message, 1}
+
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, Phoenix.json_library().encode!(%{"live_status" => "is_live"})}
+
+        _url, :download, _opts, _ot, _addl ->
+          # This shouldn't be called, but just in case
+          {:error, "Should not reach here", 1}
+      end)
+
+      # Should fall back to parse recovery
+      assert {:recovered, _media_item, ^message} = MediaDownloader.download_for_media_item(media_item)
+    end
+
+    test "only retries without SponsorBlock for SponsorBlock-specific errors", %{media_item: media_item} do
+      # This test ensures non-SponsorBlock errors don't trigger the retry logic
+      message = "Some other recoverable error"
+
+      expect(YtDlpRunnerMock, :run, 3, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, addl ->
+          [{:output_filepath, filepath} | _] = addl
+          File.write(filepath, render_metadata(:media_metadata))
+          {:error, message, 1}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+      end)
+
+      # Should use parse recovery, not SponsorBlock retry
+      assert {:recovered, _media_item, ^message} = MediaDownloader.download_for_media_item(media_item)
+    end
+  end
+
   describe "download_for_media_item/3 when testing cookie retries" do
     test "retries with cookies if we think it would help and the source allows" do
       expect(YtDlpRunnerMock, :run, 4, fn

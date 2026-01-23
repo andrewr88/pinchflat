@@ -325,6 +325,49 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilderTest do
       refute :sponsorblock_remove in res
       refute :sponsorblock_mark in res
     end
+
+    test "skips sponsorblock options when skip_sponsorblock override is set", %{media_item: media_item} do
+      media_item =
+        update_media_profile_attribute(media_item, %{
+          sponsorblock_behaviour: :mark,
+          sponsorblock_categories: ["sponsor", "intro"]
+        })
+
+      override_opts = [skip_sponsorblock: true]
+      assert {:ok, res} = DownloadOptionBuilder.build(media_item, override_opts)
+
+      refute Keyword.has_key?(res, :sponsorblock_remove)
+      refute Keyword.has_key?(res, :sponsorblock_mark)
+      refute :sponsorblock_remove in res
+      refute :sponsorblock_mark in res
+    end
+
+    test "skips sponsorblock_remove when skip_sponsorblock override is set", %{media_item: media_item} do
+      media_item =
+        update_media_profile_attribute(media_item, %{
+          sponsorblock_behaviour: :remove,
+          sponsorblock_categories: ["sponsor", "intro", "outro"]
+        })
+
+      override_opts = [skip_sponsorblock: true]
+      assert {:ok, res} = DownloadOptionBuilder.build(media_item, override_opts)
+
+      refute Keyword.has_key?(res, :sponsorblock_remove)
+      refute {:sponsorblock_remove, _} in res
+    end
+
+    test "includes sponsorblock options when skip_sponsorblock is false", %{media_item: media_item} do
+      media_item =
+        update_media_profile_attribute(media_item, %{
+          sponsorblock_behaviour: :mark,
+          sponsorblock_categories: ["sponsor", "intro"]
+        })
+
+      override_opts = [skip_sponsorblock: false]
+      assert {:ok, res} = DownloadOptionBuilder.build(media_item, override_opts)
+
+      assert {:sponsorblock_mark, "sponsor,intro"} in res
+    end
   end
 
   describe "build/1 when testing config file options" do
