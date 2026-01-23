@@ -105,6 +105,64 @@ defmodule Pinchflat.Downloading.MediaDownloader do
   end
 
   defp attempt_recovery_from_error(media_with_preloads, output_filepath, error_message) do
+    # Check if this is a SponsorBlock error that we can retry without sponsorblock
+    is_sponsorblock_error = String.contains?(to_string(error_message), "SponsorBlock")
+
+    if is_sponsorblock_error do
+      Logger.info("""
+      SponsorBlock error detected for media item ##{media_with_preloads.id}.
+      Retrying download without SponsorBlock options.
+      """)
+
+      # Retry the download without sponsorblock options
+      case retry_download_without_sponsorblock(media_with_preloads, output_filepath) do
+        {:ok, parsed_json} ->
+          Logger.info("""
+          Successfully recovered from SponsorBlock error for media item ##{media_with_preloads.id}
+          by retrying without SponsorBlock options.
+          """)
+
+          {:ok, updated_media_item} = update_media_item_from_parsed_json(media_with_preloads, parsed_json)
+          {:recovered, updated_media_item, error_message}
+
+        {:error, :unsuitable_for_download} ->
+          Logger.warning("""
+          Media item ##{media_with_preloads.id} became unsuitable for download during SponsorBlock retry.
+          Falling back to parse recovery.
+          """)
+
+          attempt_parse_recovery(media_with_preloads, output_filepath, error_message)
+
+        {:error, retry_error_message, _exit_code} ->
+          Logger.error("""
+          Retry without SponsorBlock failed for media item ##{media_with_preloads.id}: #{inspect(retry_error_message)}
+          """)
+
+          # Fall back to trying to parse the original output file
+          attempt_parse_recovery(media_with_preloads, output_filepath, error_message)
+
+        err ->
+          Logger.error("""
+          Unexpected error during SponsorBlock retry for media item ##{media_with_preloads.id}: #{inspect(err)}
+          """)
+
+          attempt_parse_recovery(media_with_preloads, output_filepath, error_message)
+      end
+    else
+      # For non-SponsorBlock errors, try to parse the output file as before
+      attempt_parse_recovery(media_with_preloads, output_filepath, error_message)
+    end
+  end
+
+  defp retry_download_without_sponsorblock(media_with_preloads, output_filepath) do
+    # Generate a new output filepath for the retry to avoid conflicts
+    new_output_filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
+    override_opts = [skip_sponsorblock: true]
+
+    download_with_options(media_with_preloads.original_url, media_with_preloads, new_output_filepath, override_opts)
+  end
+
+  defp attempt_parse_recovery(media_with_preloads, output_filepath, error_message) do
     with {:ok, contents} <- File.read(output_filepath),
          {:ok, parsed_json} <- Phoenix.json_library().decode(contents) do
       Logger.info("""

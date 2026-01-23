@@ -25,7 +25,7 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
         thumbnail_options(media_item_with_preloads) ++
         metadata_options(media_profile) ++
         quality_options(media_profile) ++
-        sponsorblock_options(media_profile) ++
+        sponsorblock_options(media_profile, override_opts) ++
         output_options(media_item_with_preloads) ++
         config_file_options(media_item_with_preloads)
 
@@ -145,15 +145,20 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
     QualityOptionBuilder.build(media_profile)
   end
 
-  defp sponsorblock_options(media_profile) do
-    categories = media_profile.sponsorblock_categories
-    behaviour = media_profile.sponsorblock_behaviour
+  defp sponsorblock_options(media_profile, override_opts \\ []) do
+    # Skip sponsorblock if explicitly requested in override_opts
+    if Keyword.get(override_opts, :skip_sponsorblock, false) do
+      []
+    else
+      categories = media_profile.sponsorblock_categories
+      behaviour = media_profile.sponsorblock_behaviour
 
-    case {behaviour, categories} do
-      {_, []} -> []
-      {:remove, _} -> [sponsorblock_remove: Enum.join(categories, ",")]
-      {:mark, _} -> [sponsorblock_mark: Enum.join(categories, ",")]
-      {:disabled, _} -> []
+      case {behaviour, categories} do
+        {_, []} -> []
+        {:remove, _} -> [sponsorblock_remove: Enum.join(categories, ",")]
+        {:mark, _} -> [sponsorblock_mark: Enum.join(categories, ",")]
+        {:disabled, _} -> []
+      end
     end
   end
 
