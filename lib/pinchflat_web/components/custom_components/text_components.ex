@@ -155,12 +155,7 @@ defmodule PinchflatWeb.CustomComponents.TextComponents do
 
   def readable_filesize(assigns) do
     {num, suffix} = NumberUtils.human_byte_size(assigns.byte_size, precision: 2)
-
-    assigns =
-      Map.merge(assigns, %{
-        num: num,
-        suffix: suffix
-      })
+    assigns = assign(assigns, num: num, suffix: suffix)
 
     ~H"""
     <.localized_number number={@num} /> {@suffix}

@@ -69,11 +69,13 @@ defmodule Pinchflat.Pages.HistoryTableLive do
   end
 
   def mount(_params, session, socket) do
+    if connected?(socket), do: PinchflatWeb.Endpoint.subscribe("job:state")
+
     page = 1
     base_query = generate_base_query(session["media_state"])
     pagination_attrs = fetch_pagination_attributes(base_query, page)
 
-    {:ok, assign(socket, Map.merge(pagination_attrs, %{base_query: base_query}))}
+    {:ok, assign(socket, Map.merge(pagination_attrs, %{base_query: base_query, reload_pending: false}))}
   end
 
   def handle_event("page_change", %{"direction" => direction}, %{assigns: assigns} = socket) do
@@ -88,6 +90,23 @@ defmodule Pinchflat.Pages.HistoryTableLive do
     new_assigns = fetch_pagination_attributes(assigns.base_query, assigns.page)
 
     {:noreply, assign(socket, new_assigns)}
+  end
+
+  def handle_info(%{topic: "job:state", event: "change"}, %{assigns: %{reload_pending: true}} = socket) do
+    {:noreply, socket}
+  end
+
+  # Jobs change state in bursts, so coalesce them into at most one reload per second
+  def handle_info(%{topic: "job:state", event: "change"}, socket) do
+    Process.send_after(self(), :reload, 1_000)
+
+    {:noreply, assign(socket, reload_pending: true)}
+  end
+
+  def handle_info(:reload, %{assigns: assigns} = socket) do
+    new_assigns = fetch_pagination_attributes(assigns.base_query, assigns.page)
+
+    {:noreply, assign(socket, Map.put(new_assigns, :reload_pending, false))}
   end
 
   defp fetch_pagination_attributes(base_query, page) do
