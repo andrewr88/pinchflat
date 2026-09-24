@@ -109,7 +109,8 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
     end
 
     test "sets the job to retryable if the download failed and was retried", %{media_item: media_item} do
-      expect(YtDlpRunnerMock, :run, 2, fn
+      # A SponsorBlock error is retried once without SponsorBlock, so each call is made twice
+      expect(YtDlpRunnerMock, :run, 4, fn
         _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
         _url, :download, _opts, _ot, _addl -> {:error, "Unable to communicate with SponsorBlock", 1}
       end)

@@ -353,7 +353,7 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilderTest do
       assert {:ok, res} = DownloadOptionBuilder.build(media_item, override_opts)
 
       refute Keyword.has_key?(res, :sponsorblock_remove)
-      refute {:sponsorblock_remove, _} in res
+      refute Enum.any?(res, &match?({:sponsorblock_remove, _}, &1))
     end
 
     test "includes sponsorblock options when skip_sponsorblock is false", %{media_item: media_item} do

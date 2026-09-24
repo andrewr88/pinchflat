@@ -205,10 +205,12 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
   end
 
   describe "download_for_media_item/3 when testing non-cookie retries" do
+    # SponsorBlock errors are retried once without SponsorBlock (another get_downloadable_status
+    # and download call) before falling back to parsing the output file
     test "returns a recovered tuple on recoverable errors", %{media_item: media_item} do
       message = "Unable to communicate with SponsorBlock"
 
-      expect(YtDlpRunnerMock, :run, 3, fn
+      expect(YtDlpRunnerMock, :run, 5, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
@@ -228,7 +230,7 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     test "attempts to update the media item on recoverable errors", %{media_item: media_item} do
       message = "Unable to communicate with SponsorBlock"
 
-      expect(YtDlpRunnerMock, :run, 3, fn
+      expect(YtDlpRunnerMock, :run, 5, fn
         _url, :download, _opts, _ot, addl ->
           [{:output_filepath, filepath} | _] = addl
           File.write(filepath, render_metadata(:media_metadata))
@@ -251,7 +253,7 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     test "returns an unrecoverable tuple if recovery fails", %{media_item: media_item} do
       message = "Unable to communicate with SponsorBlock"
 
-      expect(YtDlpRunnerMock, :run, 2, fn
+      expect(YtDlpRunnerMock, :run, 4, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
@@ -264,7 +266,7 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     end
 
     test "sets the last_error appropriately when recovered", %{media_item: media_item} do
-      expect(YtDlpRunnerMock, :run, 3, fn
+      expect(YtDlpRunnerMock, :run, 5, fn
         _url, :download, _opts, _ot, addl ->
           [{:output_filepath, filepath} | _] = addl
           File.write(filepath, render_metadata(:media_metadata))
@@ -283,7 +285,7 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     end
 
     test "sets the last_error appropriately when unrecoverable", %{media_item: media_item} do
-      expect(YtDlpRunnerMock, :run, 2, fn
+      expect(YtDlpRunnerMock, :run, 4, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
@@ -301,11 +303,14 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
   describe "download_for_media_item/3 when testing SponsorBlock retry" do
     setup do
       # Set up a media item with SponsorBlock enabled
-      profile = media_profile_fixture(%{
-        sponsorblock_behaviour: :mark,
-        sponsorblock_categories: ["sponsor", "intro", "outro"]
-      })
+      profile =
+        media_profile_fixture(%{
+          sponsorblock_behaviour: :mark,
+          sponsorblock_categories: ["sponsor", "intro", "outro"]
+        })
+
       source = source_fixture(%{media_profile_id: profile.id})
+
       media_item =
         Repo.preload(
           media_item_fixture(%{source_id: source.id}),
@@ -320,17 +325,19 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     test "retries download without SponsorBlock options when SponsorBlock error occurs", %{media_item: media_item} do
       message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
 
-      expect(YtDlpRunnerMock, :run, 5, fn
-        # Initial download attempt with SponsorBlock (fails)
+      # Initial download attempt with SponsorBlock (fails)
+      expect(YtDlpRunnerMock, :run, 2, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
         _url, :download, opts, _ot, _addl ->
           # Verify SponsorBlock options are present in initial attempt
-          assert {:sponsorblock_mark, _} in opts
+          assert Enum.any?(opts, &match?({:sponsorblock_mark, _}, &1))
           {:error, message, 1}
+      end)
 
-        # Retry without SponsorBlock (succeeds)
+      # Retry without SponsorBlock (succeeds)
+      expect(YtDlpRunnerMock, :run, 3, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
@@ -350,13 +357,17 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     test "successfully recovers from SponsorBlock error and updates media item", %{media_item: media_item} do
       message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
 
-      expect(YtDlpRunnerMock, :run, 5, fn
+      # Initial download attempt with SponsorBlock (fails)
+      expect(YtDlpRunnerMock, :run, 2, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
         _url, :download, _opts, _ot, _addl ->
           {:error, message, 1}
+      end)
 
+      # Retry without SponsorBlock (succeeds)
+      expect(YtDlpRunnerMock, :run, 3, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
@@ -377,7 +388,8 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     test "falls back to parse recovery if retry without SponsorBlock also fails", %{media_item: media_item} do
       message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
 
-      expect(YtDlpRunnerMock, :run, 4, fn
+      # Initial download attempt with SponsorBlock (fails)
+      expect(YtDlpRunnerMock, :run, 2, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
@@ -386,13 +398,19 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
           # Write metadata to file for parse recovery fallback
           File.write(filepath, render_metadata(:media_metadata))
           {:error, message, 1}
+      end)
 
+      # Retry without SponsorBlock (fails), then parse recovery fetches the thumbnail
+      expect(YtDlpRunnerMock, :run, 3, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
         _url, :download, _opts, _ot, _addl ->
           # Retry also fails
           {:error, "Some other error", 1}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
       end)
 
       # Should fall back to parse recovery and succeed
@@ -402,14 +420,18 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     test "returns unrecoverable if retry fails and parse recovery also fails", %{media_item: media_item} do
       message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
 
-      expect(YtDlpRunnerMock, :run, 4, fn
+      # Initial download attempt with SponsorBlock (fails)
+      expect(YtDlpRunnerMock, :run, 2, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
         _url, :download, _opts, _ot, _addl ->
           # No metadata written, so parse recovery will fail
           {:error, message, 1}
+      end)
 
+      # Retry without SponsorBlock (fails)
+      expect(YtDlpRunnerMock, :run, 2, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
@@ -424,7 +446,8 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     test "handles unsuitable_for_download during retry gracefully", %{media_item: media_item} do
       message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
 
-      expect(YtDlpRunnerMock, :run, 4, fn
+      # Initial download attempt with SponsorBlock (fails)
+      expect(YtDlpRunnerMock, :run, 2, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
@@ -433,13 +456,15 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
           # Write metadata to file for parse recovery fallback
           File.write(filepath, render_metadata(:media_metadata))
           {:error, message, 1}
+      end)
 
+      # Retry finds the media unsuitable so skips the download, then parse recovery fetches the thumbnail
+      expect(YtDlpRunnerMock, :run, 2, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, Phoenix.json_library().encode!(%{"live_status" => "is_live"})}
 
-        _url, :download, _opts, _ot, _addl ->
-          # This shouldn't be called, but just in case
-          {:error, "Should not reach here", 1}
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
       end)
 
       # Should fall back to parse recovery
@@ -450,7 +475,7 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
       # This test ensures non-SponsorBlock errors don't trigger the retry logic
       message = "Some other recoverable error"
 
-      expect(YtDlpRunnerMock, :run, 3, fn
+      expect(YtDlpRunnerMock, :run, 2, fn
         _url, :get_downloadable_status, _opts, _ot, _addl ->
           {:ok, "{}"}
 
@@ -458,13 +483,10 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
           [{:output_filepath, filepath} | _] = addl
           File.write(filepath, render_metadata(:media_metadata))
           {:error, message, 1}
-
-        _url, :download_thumbnail, _opts, _ot, _addl ->
-          {:ok, ""}
       end)
 
-      # Should use parse recovery, not SponsorBlock retry
-      assert {:recovered, _media_item, ^message} = MediaDownloader.download_for_media_item(media_item)
+      # Only SponsorBlock errors are recoverable, so this fails without a retry or parse recovery
+      assert {:error, :download_failed, ^message} = MediaDownloader.download_for_media_item(media_item)
     end
   end
 
