@@ -354,6 +354,39 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
       assert {:recovered, _media_item, ^message} = MediaDownloader.download_for_media_item(media_item)
     end
 
+    test "keeps the caller's override opts when retrying without SponsorBlock", %{media_item: media_item} do
+      message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
+
+      # Initial download attempt with SponsorBlock (fails)
+      expect(YtDlpRunnerMock, :run, 2, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, _addl ->
+          {:error, message, 1}
+      end)
+
+      # Retry without SponsorBlock (succeeds) and still honours the caller's overwrite behaviour
+      expect(YtDlpRunnerMock, :run, 3, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, opts, _ot, _addl ->
+          assert :no_force_overwrites in opts
+          refute :force_overwrites in opts
+          refute Keyword.has_key?(opts, :sponsorblock_mark)
+          refute Keyword.has_key?(opts, :sponsorblock_remove)
+          {:ok, render_metadata(:media_metadata)}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+      end)
+
+      override_opts = [overwrite_behaviour: :no_force_overwrites]
+
+      assert {:recovered, _media_item, ^message} = MediaDownloader.download_for_media_item(media_item, override_opts)
+    end
+
     test "successfully recovers from SponsorBlock error and updates media item", %{media_item: media_item} do
       message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
 

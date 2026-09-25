@@ -92,7 +92,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
         Logger.error("yt-dlp download error for media item ##{media_with_preloads.id}: #{inspect(message)}")
 
         if String.contains?(to_string(message), recoverable_errors()) do
-          attempt_recovery_from_error(media_with_preloads, output_filepath, message)
+          attempt_recovery_from_error(media_with_preloads, output_filepath, message, override_opts)
         else
           {:error, :download_failed, message}
         end
@@ -104,7 +104,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     end
   end
 
-  defp attempt_recovery_from_error(media_with_preloads, output_filepath, error_message) do
+  defp attempt_recovery_from_error(media_with_preloads, output_filepath, error_message, override_opts) do
     # Check if this is a SponsorBlock error that we can retry without sponsorblock
     is_sponsorblock_error = String.contains?(to_string(error_message), "SponsorBlock")
 
@@ -115,7 +115,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
       """)
 
       # Retry the download without sponsorblock options
-      case retry_download_without_sponsorblock(media_with_preloads, output_filepath) do
+      case retry_download_without_sponsorblock(media_with_preloads, override_opts) do
         {:ok, parsed_json} ->
           Logger.info("""
           Successfully recovered from SponsorBlock error for media item ##{media_with_preloads.id}
@@ -154,10 +154,11 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     end
   end
 
-  defp retry_download_without_sponsorblock(media_with_preloads, _output_filepath) do
+  defp retry_download_without_sponsorblock(media_with_preloads, override_opts) do
     # Generate a new output filepath for the retry to avoid conflicts
     new_output_filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
-    override_opts = [skip_sponsorblock: true]
+    # Keep the caller's options (eg: overwrite_behaviour) and only disable SponsorBlock
+    override_opts = Keyword.put(override_opts, :skip_sponsorblock, true)
 
     download_with_options(media_with_preloads.original_url, media_with_preloads, new_output_filepath, override_opts)
   end
