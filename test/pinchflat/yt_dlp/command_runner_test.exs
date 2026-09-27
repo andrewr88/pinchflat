@@ -194,6 +194,14 @@ defmodule Pinchflat.YtDlp.CommandRunnerTest do
 
       assert String.contains?(output, "--update")
     end
+
+    test "includes stderr in the output when the update fails" do
+      wrap_executable(Path.join(File.cwd!(), "test/support/scripts/yt-dlp-mocks/stderr_error.sh"), fn ->
+        assert {:error, output} = Runner.update()
+
+        assert String.contains?(output, "ERROR: Unable to update")
+      end)
+    end
   end
 
   defp wrap_executable(new_executable, fun) do

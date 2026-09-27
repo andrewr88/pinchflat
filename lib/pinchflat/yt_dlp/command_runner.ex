@@ -77,7 +77,8 @@ defmodule Pinchflat.YtDlp.CommandRunner do
   end
 
   @doc """
-  Updates yt-dlp to the latest version
+  Updates yt-dlp to the latest version. The output includes stderr
+  since that's where yt-dlp reports why an update failed.
 
   Returns {:ok, binary()} | {:error, binary()}
   """
@@ -85,7 +86,7 @@ defmodule Pinchflat.YtDlp.CommandRunner do
   def update do
     command = backend_executable()
 
-    case CliUtils.wrap_cmd(command, ["--update"]) do
+    case CliUtils.wrap_cmd(command, ["--update"], stderr_to_stdout: true) do
       {output, 0} ->
         {:ok, String.trim(output)}
 

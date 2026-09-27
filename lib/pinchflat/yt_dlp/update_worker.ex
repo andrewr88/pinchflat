@@ -8,7 +8,7 @@ defmodule Pinchflat.YtDlp.UpdateWorker do
   require Logger
 
   alias __MODULE__
-  alias Pinchflat.Settings
+  alias Pinchflat.YtDlp.Updater
 
   @doc """
   Starts the yt-dlp update worker. Does not attach it to a task like `kickoff_with_task/2`
@@ -30,15 +30,8 @@ defmodule Pinchflat.YtDlp.UpdateWorker do
   def perform(%Oban.Job{}) do
     Logger.info("Updating yt-dlp")
 
-    yt_dlp_runner().update()
-
-    {:ok, yt_dlp_version} = yt_dlp_runner().version()
-    Settings.set(yt_dlp_version: yt_dlp_version)
+    Updater.update_and_record_version()
 
     :ok
-  end
-
-  defp yt_dlp_runner do
-    Application.get_env(:pinchflat, :yt_dlp_runner)
   end
 end

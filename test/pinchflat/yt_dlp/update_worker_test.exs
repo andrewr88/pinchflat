@@ -9,7 +9,7 @@ defmodule Pinchflat.YtDlp.UpdateWorkerTest do
       expect(YtDlpRunnerMock, :update, fn -> {:ok, ""} end)
       expect(YtDlpRunnerMock, :version, fn -> {:ok, ""} end)
 
-      perform_job(UpdateWorker, %{})
+      assert :ok = perform_job(UpdateWorker, %{})
     end
 
     test "saves the new version to the database" do
@@ -19,6 +19,13 @@ defmodule Pinchflat.YtDlp.UpdateWorkerTest do
       perform_job(UpdateWorker, %{})
 
       assert {:ok, "1.2.3"} = Settings.get(:yt_dlp_version)
+    end
+
+    test "still returns :ok if the update fails" do
+      expect(YtDlpRunnerMock, :update, fn -> {:error, "update error"} end)
+      expect(YtDlpRunnerMock, :version, fn -> {:error, "version error"} end)
+
+      assert :ok = perform_job(UpdateWorker, %{})
     end
   end
 end
