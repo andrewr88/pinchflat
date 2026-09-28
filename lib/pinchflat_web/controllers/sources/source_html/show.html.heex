@@ -16,6 +16,19 @@
     </.link>
   </nav>
 </div>
+<div
+  :if={match?(%{state: "discarded"}, @latest_directory_update_job)}
+  role="alert"
+  class="mb-6 w-full border-l-6 border-[#F87171] bg-[#F87171] bg-opacity-[50%] p-5 shadow-md dark:bg-opacity-40 dark:text-white"
+>
+  <h5 class="mb-2 text-lg font-bold">
+    Last directory update failed
+    <span class="ml-1 text-sm font-normal opacity-80">
+      <.datetime_in_zone datetime={@latest_directory_update_job.discarded_at} />
+    </span>
+  </h5>
+  <pre class="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-sm p-4 font-mono text-sm dark:bg-meta-4">{List.last(@latest_directory_update_job.errors)["error"]}</pre>
+</div>
 <div class="rounded-sm border border-stroke bg-white px-5 py-5 shadow-default dark:border-strokedark dark:bg-boxdark sm:px-7.5">
   <div class="max-w-full">
     <.tabbed_layout>

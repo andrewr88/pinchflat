@@ -10,6 +10,7 @@ defmodule PinchflatWeb.SourceControllerTest do
   alias Pinchflat.Media.FileSyncingWorker
   alias Pinchflat.Sources.SourceDeletionWorker
   alias Pinchflat.Downloading.MediaDownloadWorker
+  alias Pinchflat.Sources.SourceDirectoryUpdateWorker
   alias Pinchflat.Metadata.SourceMetadataStorageWorker
   alias Pinchflat.SlowIndexing.MediaCollectionIndexingWorker
 
@@ -95,6 +96,60 @@ defmodule PinchflatWeb.SourceControllerTest do
       conn = post(conn, ~p"/sources", source: invalid_attrs)
 
       refute html_response(conn, 200) =~ "MENU"
+    end
+  end
+
+  describe "show source" do
+    test "shows no directory update failure when the source has no directory updates", %{conn: conn} do
+      source = source_fixture()
+
+      conn = get(conn, ~p"/sources/#{source}")
+      refute html_response(conn, 200) =~ "Last directory update failed"
+    end
+
+    test "shows the last error when the latest directory update failed", %{conn: conn} do
+      source = source_fixture()
+
+      discarded_directory_update_job_fixture(source, [
+        "an older error",
+        "series_directory: could not determine the new series directory"
+      ])
+
+      conn = get(conn, ~p"/sources/#{source}")
+      html = html_response(conn, 200)
+
+      assert html =~ "Last directory update failed"
+      assert html =~ "series_directory: could not determine the new series directory"
+      refute html =~ "an older error"
+    end
+
+    test "escapes the error", %{conn: conn} do
+      source = source_fixture()
+      discarded_directory_update_job_fixture(source, ["<script>alert(1)</script>"])
+
+      conn = get(conn, ~p"/sources/#{source}")
+      html = html_response(conn, 200)
+
+      assert html =~ "&lt;script&gt;alert(1)&lt;/script&gt;"
+      refute html =~ "<script>alert(1)</script>"
+    end
+
+    test "shows no directory update failure when a newer directory update completed", %{conn: conn} do
+      source = source_fixture()
+      discarded_directory_update_job_fixture(source, ["some error"])
+      directory_update_job_fixture(source, state: "completed", completed_at: now())
+
+      conn = get(conn, ~p"/sources/#{source}")
+      refute html_response(conn, 200) =~ "Last directory update failed"
+    end
+
+    test "shows no directory update failure when a newer directory update is queued", %{conn: conn} do
+      source = source_fixture()
+      discarded_directory_update_job_fixture(source, ["some error"])
+      {:ok, _} = SourceDirectoryUpdateWorker.kickoff_with_task(source)
+
+      conn = get(conn, ~p"/sources/#{source}")
+      refute html_response(conn, 200) =~ "Last directory update failed"
     end
   end
 
@@ -269,6 +324,27 @@ defmodule PinchflatWeb.SourceControllerTest do
     end
   end
 
+  describe "update_directory" do
+    # No yt-dlp mock is set up, so this also checks the update itself doesn't run during the request
+    test "enqueues a directory update", %{conn: conn} do
+      source = source_fixture()
+
+      assert [] = all_enqueued(worker: SourceDirectoryUpdateWorker)
+      post(conn, ~p"/sources/#{source.id}/update_directory")
+      assert [_] = all_enqueued(worker: SourceDirectoryUpdateWorker, args: %{"id" => source.id})
+    end
+
+    test "redirects to the source page with a flash message", %{conn: conn} do
+      source = source_fixture()
+
+      conn = post(conn, ~p"/sources/#{source.id}/update_directory")
+      assert redirected_to(conn) == ~p"/sources/#{source.id}"
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) ==
+               "Directory update enqueued. Files will be moved in the background."
+    end
+  end
+
   defp create_source(_) do
     source = source_fixture()
     media_item = media_item_with_attachments(%{source_id: source.id})
@@ -286,5 +362,21 @@ defmodule PinchflatWeb.SourceControllerTest do
         playlist_title: "some playlist name"
       })
     }
+  end
+
+  # Directory updates don't run in these tests, so this queues one and sets its outcome directly
+  defp directory_update_job_fixture(source, attrs) do
+    {:ok, task} = SourceDirectoryUpdateWorker.kickoff_with_task(source)
+
+    Oban.Job
+    |> Repo.get!(task.job_id)
+    |> Ecto.Changeset.change(attrs)
+    |> Repo.update!()
+  end
+
+  defp discarded_directory_update_job_fixture(source, error_messages) do
+    errors = Enum.map(error_messages, &%{attempt: 1, at: now(), error: &1})
+
+    directory_update_job_fixture(source, state: "discarded", discarded_at: now(), errors: errors)
   end
 end

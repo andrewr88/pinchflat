@@ -213,6 +213,63 @@ defmodule Pinchflat.YtDlp.MediaTest do
     end
   end
 
+  @info_json %{"id" => "video1", "title" => "Video 1", "channel" => "Channel 1", "ext" => "webm"}
+  @output_template "/media/%(channel)s/%(title)S.%(ext)S"
+
+  describe "get_output_filepath/4" do
+    test "has yt-dlp fill in the template from the info JSON in a file, then deletes its temporary files" do
+      expect(YtDlpRunnerMock, :run, fn
+        "--load-info-json=" <> info_json_filepath, :get_output_filepath, opts, ot, addl ->
+          assert info_json_filepath |> File.read!() |> Phoenix.json_library().decode!() == @info_json
+          assert opts == [:simulate, :skip_download, :no_check_formats, output: @output_template]
+          assert ot == "%(filename)s"
+          # yt-dlp prints the filepath to a temporary file that get_output_filepath/4 made
+          assert [output_filepath: output_filepath] = addl
+          assert File.exists?(output_filepath)
+
+          send(self(), {:tmpfiles, [info_json_filepath, output_filepath]})
+          {:ok, "/media/Channel 1/Video 1.webm\n"}
+      end)
+
+      assert {:ok, "/media/Channel 1/Video 1.webm"} = Media.get_output_filepath(@info_json, @output_template)
+
+      assert_received {:tmpfiles, tmpfiles}
+      Enum.each(tmpfiles, fn tmpfile -> refute File.exists?(tmpfile) end)
+    end
+
+    test "passes along additional command options and runner options" do
+      expect(YtDlpRunnerMock, :run, fn _load_info_json, :get_output_filepath, opts, _ot, addl ->
+        assert [:simulate, :skip_download, :no_check_formats, {:output, @output_template}, :custom_arg] = opts
+        assert Keyword.delete(addl, :output_filepath) == [addl_arg: true]
+
+        {:ok, "/media/Channel 1/Video 1.webm\n"}
+      end)
+
+      assert {:ok, _} = Media.get_output_filepath(@info_json, @output_template, [:custom_arg], addl_arg: true)
+    end
+
+    test "returns the error straight through and deletes its temporary files when the command fails" do
+      expect(YtDlpRunnerMock, :run, fn
+        "--load-info-json=" <> info_json_filepath, :get_output_filepath, _opts, _ot, addl ->
+          assert [output_filepath: output_filepath] = addl
+
+          send(self(), {:tmpfiles, [info_json_filepath, output_filepath]})
+          {:error, "Big issue", 1}
+      end)
+
+      assert {:error, "Big issue", 1} = Media.get_output_filepath(@info_json, @output_template)
+
+      assert_received {:tmpfiles, tmpfiles}
+      Enum.each(tmpfiles, fn tmpfile -> refute File.exists?(tmpfile) end)
+    end
+
+    test "returns an error when yt-dlp doesn't give a filepath" do
+      expect(YtDlpRunnerMock, :run, fn _load_info_json, :get_output_filepath, _opts, _ot, _addl -> {:ok, "\n"} end)
+
+      assert {:error, _} = Media.get_output_filepath(@info_json, @output_template)
+    end
+  end
+
   describe "indexing_output_template/0" do
     test "contains all the greatest hits" do
       attrs =

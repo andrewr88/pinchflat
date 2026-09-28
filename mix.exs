@@ -11,10 +11,6 @@ defmodule Pinchflat.MixProject do
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
-      preferred_cli_env: [
-        check: :test,
-        credo: :test
-      ],
       test_coverage: [
         ignore_modules: [
           Pinchflat.HTTP.HTTPClient,
@@ -26,6 +22,10 @@ defmodule Pinchflat.MixProject do
         ]
       ]
     ]
+  end
+
+  def cli do
+    [preferred_envs: [check: :test, credo: :test]]
   end
 
   # Configuration for the OTP application.
@@ -101,11 +101,11 @@ defmodule Pinchflat.MixProject do
       "assets.deploy": ["tailwind default --minify", "esbuild default --minify", "phx.digest"],
       "ecto.migrate": [
         "ecto.migrate",
-        ~s(cmd [ -z "$MIX_ENV" ] && yarn run create-erd || echo "No ERD generated")
+        ~S(cmd sh -c "[ -z \"$MIX_ENV\" ] && yarn run create-erd || echo 'No ERD generated'")
       ],
       "ecto.rollback": [
         "ecto.rollback",
-        ~s(cmd [ -z "$MIX_ENV" ] && yarn run create-erd || echo "No ERD generated")
+        ~S(cmd sh -c "[ -z \"$MIX_ENV\" ] && yarn run create-erd || echo 'No ERD generated'")
       ],
       "version.bump": "cmd ./tooling/version_bump.sh"
     ]

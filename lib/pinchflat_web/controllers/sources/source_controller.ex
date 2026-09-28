@@ -11,6 +11,7 @@ defmodule PinchflatWeb.Sources.SourceController do
   alias Pinchflat.Sources.SourceDeletionWorker
   alias Pinchflat.Downloading.DownloadingHelpers
   alias Pinchflat.SlowIndexing.SlowIndexingHelpers
+  alias Pinchflat.Sources.SourceDirectoryUpdateWorker
   alias Pinchflat.Metadata.SourceMetadataStorageWorker
 
   def index(conn, _params) do
@@ -19,7 +20,8 @@ defmodule PinchflatWeb.Sources.SourceController do
 
   def new(conn, params) do
     # This lets me preload the settings from another source for more efficient creation
-    cs_struct =
+    %Source{} =
+      cs_struct =
       case to_string(params["template_id"]) do
         "" -> %Source{}
         template_id -> Repo.get(Source, template_id) || %Source{}
@@ -73,7 +75,11 @@ defmodule PinchflatWeb.Sources.SourceController do
       |> Tasks.list_tasks_for(nil, [:executing, :available, :scheduled, :retryable])
       |> Repo.preload(:job)
 
-    render(conn, :show, source: source, pending_tasks: pending_tasks)
+    render(conn, :show,
+      source: source,
+      pending_tasks: pending_tasks,
+      latest_directory_update_job: SourceDirectoryUpdateWorker.latest_job_for(source)
+    )
   end
 
   def edit(conn, %{"id" => id}) do
@@ -156,6 +162,15 @@ defmodule PinchflatWeb.Sources.SourceController do
       id,
       "File sync enqueued.",
       &FileSyncingWorker.kickoff_with_task/1
+    )
+  end
+
+  def update_directory(conn, %{"source_id" => id}) do
+    wrap_forced_action(
+      conn,
+      id,
+      "Directory update enqueued. Files will be moved in the background.",
+      &SourceDirectoryUpdateWorker.kickoff_with_task/1
     )
   end
 

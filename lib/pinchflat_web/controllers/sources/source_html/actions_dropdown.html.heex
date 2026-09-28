@@ -16,7 +16,7 @@
     <span x-data="{ copied: false }" x-on:click={~s"
         copyWithCallbacks(
           String.raw`#{Jason.Formatter.pretty_print(Phoenix.json_library().encode!(@source))}`,
-          () => copied = true, 
+          () => copied = true,
           () => copied = false
         )
       "}>
@@ -75,6 +75,15 @@
       data-confirm="Are you sure you want to sync files? This will update media items if their files have been deleted. File addition or moves are not detected. This isn't normally needed."
     >
       Sync Files on Disk
+    </.link>
+  </:option>
+  <:option>
+    <.link
+      href={~p"/sources/#{@source}/update_directory"}
+      method="post"
+      data-confirm="Are you sure you want to update the directory structure to match the current custom name? This will move all files for this source and all its media items in the background."
+    >
+      Update Directory to Match Custom Name
     </.link>
   </:option>
   <:option>

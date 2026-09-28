@@ -30,6 +30,7 @@ defmodule Pinchflat.YtDlp.Media do
 
   alias __MODULE__
   alias Pinchflat.Utils.FunctionUtils
+  alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Metadata.MetadataFileHelpers
 
   @doc """
@@ -108,6 +109,42 @@ defmodule Pinchflat.YtDlp.Media do
   end
 
   @doc """
+  Returns the filepath yt-dlp gives the media described by `info_json` with the given
+  output template. Works offline: `info_json` is yt-dlp's info JSON for the media (eg:
+  the one stored after a download), which yt-dlp loads from a temporary file instead of
+  fetching anything. Optionally takes a list of additional command options (eg: ones
+  that change the filename) to pass to yt-dlp or configuration-related options to pass
+  to the runner. It sets the runner's `:output_filepath` to a temporary file, which is
+  deleted afterwards like the info JSON's.
+
+  Returns {:ok, binary()} | {:error, any, ...}.
+  """
+  def get_output_filepath(info_json, output_template, command_opts \\ [], addl_opts \\ []) do
+    # `no_check_formats` stops yt-dlp from test-downloading formats, which would go online
+    all_command_opts = [:simulate, :skip_download, :no_check_formats, output: output_template] ++ command_opts
+    info_json_filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
+    # The file yt-dlp prints the filepath to. Passed so it can be deleted afterwards too
+    output_filepath = FilesystemUtils.generate_metadata_tmpfile(:txt)
+    runner_opts = Keyword.put(addl_opts, :output_filepath, output_filepath)
+
+    try do
+      File.write!(info_json_filepath, Phoenix.json_library().encode!(info_json))
+
+      # There's no URL with `--load-info-json`. The runner puts its first argument
+      # before all the options, so the option goes there in place of a URL
+      load_info_json = "--load-info-json=#{info_json_filepath}"
+
+      case backend_runner().run(load_info_json, :get_output_filepath, all_command_opts, "%(filename)s", runner_opts) do
+        {:ok, output} -> parse_output_filepath(output)
+        err -> err
+      end
+    after
+      File.rm(info_json_filepath)
+      File.rm(output_filepath)
+    end
+  end
+
+  @doc """
   Returns the output template for yt-dlp's indexing command.
 
   NOTE: playlist_index is really only useful for playlists that will never change their order.
@@ -174,6 +211,13 @@ defmodule Pinchflat.YtDlp.Media do
       # This preserves my tenuous support for non-youtube sources.
       nil -> {:ok, :downloadable}
       _ -> {:error, "Unknown live status: #{response["live_status"]}"}
+    end
+  end
+
+  defp parse_output_filepath(output) do
+    case String.trim(output) do
+      "" -> {:error, "yt-dlp didn't return a filepath"}
+      filepath -> {:ok, filepath}
     end
   end
 
