@@ -9,9 +9,6 @@ ARG RUNNER_IMAGE="debian:${DEBIAN_VERSION}"
 
 FROM ${BUILDER_IMAGE} AS builder
 
-ARG TARGETPLATFORM
-RUN echo "Building for ${TARGETPLATFORM:?}"
-
 # install build dependencies
 RUN apt-get update -y && \
     # System packages
@@ -27,14 +24,6 @@ RUN apt-get update -y && \
     # Hex and Rebar
     mix local.hex --force && \
     mix local.rebar --force && \
-    # FFmpeg (latest build that doesn't cause an illegal instruction error for some users - see #347)
-    export FFMPEG_DOWNLOAD=$(case ${TARGETPLATFORM:-linux/amd64} in \
-    "linux/amd64")   echo "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/autobuild-2024-07-30-14-10/ffmpeg-N-116468-g0e09f6d690-linux64-gpl.tar.xz"   ;; \
-    "linux/arm64")   echo "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/autobuild-2024-07-30-14-10/ffmpeg-N-116468-g0e09f6d690-linuxarm64-gpl.tar.xz" ;; \
-    *)               echo ""        ;; esac) && \
-    curl -L ${FFMPEG_DOWNLOAD} --output /tmp/ffmpeg.tar.xz && \
-    tar -xf /tmp/ffmpeg.tar.xz --strip-components=2 --no-anchored -C /usr/local/bin/ "ffmpeg" && \
-    tar -xf /tmp/ffmpeg.tar.xz --strip-components=2 --no-anchored -C /usr/local/bin/ "ffprobe" && \
     # Cleanup
     apt-get clean && \
     rm -f /var/lib/apt/lists/*_*
@@ -76,9 +65,6 @@ FROM ${RUNNER_IMAGE}
 ARG TARGETPLATFORM
 ARG PORT=8945
 
-COPY --from=builder ./usr/local/bin/ffmpeg /usr/bin/ffmpeg
-COPY --from=builder ./usr/local/bin/ffprobe /usr/bin/ffprobe
-
 RUN apt-get update -y && \
     # System packages
     apt-get install -y \
@@ -98,6 +84,9 @@ RUN apt-get update -y && \
       # unzip is needed for Deno
       unzip \
       procps && \
+    # FFmpeg: Debian's build, since pinned yt-dlp/FFmpeg-Builds releases get
+    # deleted and newer ones crash with "illegal instruction" on some CPUs (#347)
+    apt-get install -y --no-install-recommends ffmpeg && \
     # Install Deno - required for YouTube downloads (See yt-dlp#14404)
     curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- -y --no-modify-path && \
     # Apprise
