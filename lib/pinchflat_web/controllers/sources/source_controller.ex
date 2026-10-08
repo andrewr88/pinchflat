@@ -183,8 +183,10 @@ defmodule PinchflatWeb.Sources.SourceController do
     |> redirect(to: ~p"/sources/#{source}")
   end
 
+  # Profiles marked for deletion are left out since moving a source onto one would get it deleted too
   defp media_profiles do
     MediaProfile
+    |> where([mp], is_nil(mp.marked_for_deletion_at))
     |> order_by(asc: :name)
     |> Repo.all()
   end

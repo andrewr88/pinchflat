@@ -63,6 +63,16 @@ defmodule PinchflatWeb.SourceControllerTest do
       assert html_response(conn, 200) =~ "2021-01-01"
       refute html_response(conn, 200) =~ source.custom_name
     end
+
+    test "omits media profiles that are marked for deletion", %{conn: conn} do
+      media_profile_fixture(name: "Profile in use")
+      media_profile_fixture(name: "Profile being deleted", marked_for_deletion_at: now())
+
+      conn = get(conn, ~p"/sources/new")
+
+      assert html_response(conn, 200) =~ "Profile in use"
+      refute html_response(conn, 200) =~ "Profile being deleted"
+    end
   end
 
   describe "create source" do
@@ -159,6 +169,16 @@ defmodule PinchflatWeb.SourceControllerTest do
     test "renders form for editing chosen source", %{conn: conn, source: source} do
       conn = get(conn, ~p"/sources/#{source}/edit")
       assert html_response(conn, 200) =~ "Editing \"#{source.custom_name}\""
+    end
+
+    test "omits media profiles that are marked for deletion", %{conn: conn, source: source} do
+      media_profile_fixture(name: "Profile in use")
+      media_profile_fixture(name: "Profile being deleted", marked_for_deletion_at: now())
+
+      conn = get(conn, ~p"/sources/#{source}/edit")
+
+      assert html_response(conn, 200) =~ "Profile in use"
+      refute html_response(conn, 200) =~ "Profile being deleted"
     end
   end
 

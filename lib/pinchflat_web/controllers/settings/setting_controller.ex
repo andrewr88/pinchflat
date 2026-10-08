@@ -2,6 +2,7 @@ defmodule PinchflatWeb.Settings.SettingController do
   use PinchflatWeb, :controller
 
   alias Pinchflat.Settings
+  alias Pinchflat.Utils.FilesystemUtils
 
   def show(conn, _params) do
     setting = Settings.record()
@@ -44,7 +45,7 @@ defmodule PinchflatWeb.Settings.SettingController do
     base_dir = Application.get_env(:pinchflat, :extras_directory)
     cookie_file = Path.join(base_dir, "cookies.txt")
 
-    case Pinchflat.Utils.FilesystemUtils.write_p(cookie_file, cookie_content) do
+    case write_private_file(cookie_file, cookie_content) do
       :ok ->
         conn
         |> put_flash(:info, "Cookies saved successfully.")
@@ -62,46 +63,60 @@ defmodule PinchflatWeb.Settings.SettingController do
     cookie_file = Path.join(base_dir, "cookies.txt")
 
     # Check if cookie file exists and is non-empty
-    unless Pinchflat.Utils.FilesystemUtils.exists_and_nonempty?(cookie_file) do
+    if FilesystemUtils.exists_and_nonempty?(cookie_file) do
+      # Validate cookies by trying to access the private Liked Videos playlist
+      # This playlist requires authentication and is a good test for cookie validity
+      liked_videos_url = "https://www.youtube.com/playlist?list=LL"
+
+      # Use a minimal command to just check if we can access the playlist
+      command_opts = [:simulate, :skip_download, playlist_end: 1]
+      runner_opts = [use_cookies: true, skip_sleep_interval: true]
+
+      case yt_dlp_runner().run(liked_videos_url, :validate_cookies, command_opts, "%(.{id,title})j", runner_opts) do
+        {:ok, _output} ->
+          conn
+          |> put_flash(:info, "Cookies validated successfully! Your cookies can access private playlists.")
+          |> redirect(to: ~p"/settings")
+
+        {:error, output, _status} ->
+          # Check if the error is specifically about authentication/access
+          error_message =
+            cond do
+              String.contains?(output, "Private video") or
+                String.contains?(output, "Sign in to confirm your age") or
+                  String.contains?(output, "This is a private playlist") ->
+                "Cookies validation failed: Cannot access private playlist. Please check that your cookies are valid and not expired."
+
+              String.contains?(output, "cookies") ->
+                "Cookies validation failed: Cookie file error. Please check your cookie file format."
+
+              true ->
+                "Cookies validation failed: #{String.slice(output, 0, 200)}"
+            end
+
+          conn
+          |> put_flash(:error, error_message)
+          |> redirect(to: ~p"/settings")
+      end
+    else
       conn
       |> put_flash(:error, "No cookie file found. Please save your cookies first.")
       |> redirect(to: ~p"/settings")
-    else
-
-    # Validate cookies by trying to access the private Liked Videos playlist
-    # This playlist requires authentication and is a good test for cookie validity
-    liked_videos_url = "https://www.youtube.com/playlist?list=LL"
-
-    # Use a minimal command to just check if we can access the playlist
-    command_opts = [:simulate, :skip_download, playlist_end: 1]
-    runner_opts = [use_cookies: true, skip_sleep_interval: true]
-
-    case Pinchflat.YtDlp.CommandRunner.run(liked_videos_url, :validate_cookies, command_opts, "%(.{id,title})j", runner_opts) do
-      {:ok, _output} ->
-        conn
-        |> put_flash(:info, "Cookies validated successfully! Your cookies can access private playlists.")
-        |> redirect(to: ~p"/settings")
-
-      {:error, output, _status} ->
-        # Check if the error is specifically about authentication/access
-        error_message =
-          cond do
-            String.contains?(output, "Private video") or
-            String.contains?(output, "Sign in to confirm your age") or
-            String.contains?(output, "This is a private playlist") ->
-              "Cookies validation failed: Cannot access private playlist. Please check that your cookies are valid and not expired."
-
-            String.contains?(output, "cookies") ->
-              "Cookies validation failed: Cookie file error. Please check your cookie file format."
-
-            true ->
-              "Cookies validation failed: #{String.slice(output, 0, 200)}"
-          end
-
-        conn
-        |> put_flash(:error, error_message)
-        |> redirect(to: ~p"/settings")
     end
+  end
+
+  # cookies.txt holds browser session credentials, so only the app's user should be able to read it.
+  # The permissions are restricted before the cookies are written so they're never readable by anyone
+  # else. Appending nothing creates the file if needed without clearing the current cookies.
+  defp write_private_file(filepath, content) do
+    with :ok <- FilesystemUtils.write_p(filepath, "", [:append]),
+         :ok <- File.chmod(filepath, 0o600) do
+      File.write(filepath, content)
     end
+  end
+
+  defp yt_dlp_runner do
+    # This approach lets us mock the command for testing
+    Application.get_env(:pinchflat, :yt_dlp_runner)
   end
 end
