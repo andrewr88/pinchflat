@@ -7,6 +7,7 @@ defmodule Pinchflat.Podcasts.RssFeedBuilder do
 
   import Pinchflat.Utils.XmlUtils, only: [safe: 1]
 
+  alias Pinchflat.Utils.MimeUtils
   alias Pinchflat.Podcasts.PodcastHelpers
   alias PinchflatWeb.Router.Helpers, as: Routes
 
@@ -15,15 +16,17 @@ defmodule Pinchflat.Podcasts.RssFeedBuilder do
   Only MediaItems that have been persisted will be included in the feed.
 
   ## Options:
-    - `:limit` - The maximum number of media items to include in the feed. Defaults to 2,000.
+    - `:limit` - The maximum number of media items to include in the feed.
+      Defaults to the limit of `PodcastHelpers.persisted_media_items_for/2`.
+    - `:url_base` - The scheme, host, and port to build the feed's URLs with, without
+      a path since the routes include the endpoint's. Defaults to the endpoint's URL.
 
   Returns an XML document as a string.
   """
   def build(source, opts \\ []) do
-    limit = Keyword.get(opts, :limit, 2_000)
     url_base = Keyword.get(opts, :url_base, PinchflatWeb.Endpoint.url())
 
-    media_items = PodcastHelpers.persisted_media_items_for(source, limit: limit)
+    media_items = PodcastHelpers.persisted_media_items_for(source, Keyword.take(opts, [:limit]))
     build_source_xml(source, media_items, url_base)
   end
 
@@ -54,15 +57,11 @@ defmodule Pinchflat.Podcasts.RssFeedBuilder do
         <atom:link href="#{safe(generate_self_link(url_base, source))}" rel="self" type="application/rss+xml" />
         <podcast:locked>yes</podcast:locked>
         <podcast:guid>#{source.uuid}</podcast:guid>
-        <image>
-          <url>#{safe(feed_image_path)}</url>
-          <title>#{safe(source.custom_name)}</title>
-          <link>#{safe(source.original_url)}</link>
-        </image>
+        #{feed_image_path && build_feed_image_xml(source, feed_image_path)}
         <itunes:author>#{safe(source.custom_name)}</itunes:author>
         <itunes:subtitle>#{safe(source.custom_name)}</itunes:subtitle>
         <itunes:block>yes</itunes:block>
-        <itunes:image href="#{safe(feed_image_path)}"></itunes:image>
+        #{feed_image_path && ~s(<itunes:image href="#{safe(feed_image_path)}"></itunes:image>)}
         <itunes:explicit>false</itunes:explicit>
         <itunes:category text="TV &amp; Film"></itunes:category>
 
@@ -70,6 +69,16 @@ defmodule Pinchflat.Podcasts.RssFeedBuilder do
 
       </channel>
     </rss>
+    """
+  end
+
+  defp build_feed_image_xml(source, feed_image_path) do
+    """
+    <image>
+      <url>#{safe(feed_image_path)}</url>
+      <title>#{safe(source.custom_name)}</title>
+      <link>#{safe(source.original_url)}</link>
+    </image>
     """
   end
 
@@ -83,11 +92,11 @@ defmodule Pinchflat.Podcasts.RssFeedBuilder do
       <link>#{safe(media_item.original_url)}</link>
       <description>#{safe(media_item.description)}</description>
       <pubDate>#{Calendar.strftime(media_item.uploaded_at, @datetime_format)}</pubDate>
-      <itunes:duration>#{media_item.duration_seconds}</itunes:duration>
+      #{media_item.duration_seconds && ~s(<itunes:duration>#{media_item.duration_seconds}</itunes:duration>)}
       <enclosure
-        url="#{media_stream_path(url_base, media_item)}"
-        length="#{media_item.media_size_bytes}"
-        type="#{MIME.from_path(media_item.media_filepath)}"
+        url="#{safe(media_stream_path(url_base, media_item))}"
+        length="#{media_size_bytes(media_item)}"
+        type="#{MimeUtils.from_path(media_item.media_filepath)}"
       />
       <itunes:author>#{safe(source.custom_name)}</itunes:author>
       <itunes:subtitle>#{safe(media_item.title)}</itunes:subtitle>
@@ -100,6 +109,17 @@ defmodule Pinchflat.Podcasts.RssFeedBuilder do
     </item>
     """
   end
+
+  # The size is saved when media is downloaded, but older versions didn't save it and it's nil
+  # if the file couldn't be read then. Clients need a length, so it's taken from the file instead
+  defp media_size_bytes(%{media_size_bytes: nil} = media_item) do
+    case File.stat(media_item.media_filepath) do
+      {:ok, %File.Stat{size: size}} -> size
+      {:error, _} -> 0
+    end
+  end
+
+  defp media_size_bytes(media_item), do: media_item.media_size_bytes
 
   defp generate_self_link(url_base, source) do
     Path.join(url_base, "#{podcast_route(:rss_feed, source.uuid)}.xml")
@@ -114,7 +134,7 @@ defmodule Pinchflat.Podcasts.RssFeedBuilder do
   defp feed_image_path(url_base, source, media_items) do
     case PodcastHelpers.select_cover_image(source, media_items) do
       {:error, _} ->
-        ""
+        nil
 
       {:ok, filepath} ->
         extension = Path.extname(filepath)
@@ -122,13 +142,14 @@ defmodule Pinchflat.Podcasts.RssFeedBuilder do
     end
   end
 
-  def item_image_path(url_base, media_item) do
-    if media_item.thumbnail_filepath && File.exists?(media_item.thumbnail_filepath) do
-      extension = Path.extname(media_item.thumbnail_filepath)
+  defp item_image_path(url_base, media_item) do
+    case PodcastHelpers.select_episode_image(media_item) do
+      {:error, _} ->
+        nil
 
-      Path.join(url_base, "#{podcast_route(:episode_image, media_item.uuid)}#{extension}")
-    else
-      nil
+      {:ok, filepath} ->
+        extension = Path.extname(filepath)
+        Path.join(url_base, "#{podcast_route(:episode_image, media_item.uuid)}#{extension}")
     end
   end
 

@@ -14,6 +14,14 @@ defmodule Pinchflat.Podcasts.PodcastHelpersTest do
       assert found_source.custom_name == source.custom_name
       assert found_source.uuid == source.uuid
     end
+
+    test "orders sources by name" do
+      source_fixture(%{custom_name: "B"})
+      source_fixture(%{custom_name: "C"})
+      source_fixture(%{custom_name: "A"})
+
+      assert Enum.map(PodcastHelpers.opml_sources(), & &1.custom_name) == ["A", "B", "C"]
+    end
   end
 
   describe "persisted_media_items_for/2" do
@@ -41,6 +49,43 @@ defmodule Pinchflat.Podcasts.PodcastHelpersTest do
       older = media_item_with_attachments(%{source_id: source.id, uploaded_at: now_minus(1, :days)})
 
       assert [^current, ^older, ^oldest] = PodcastHelpers.persisted_media_items_for(source)
+    end
+
+    test "orders media items uploaded at the same time by newest first" do
+      source = source_fixture()
+      uploaded_at = now()
+
+      first = media_item_with_attachments(%{source_id: source.id, uploaded_at: uploaded_at})
+      second = media_item_with_attachments(%{source_id: source.id, uploaded_at: uploaded_at})
+
+      assert Enum.map(PodcastHelpers.persisted_media_items_for(source), & &1.id) == [second.id, first.id]
+    end
+
+    test "returns the newest media items up to the limit" do
+      source = source_fixture()
+
+      _oldest = media_item_with_attachments(%{source_id: source.id, uploaded_at: now_minus(2, :days)})
+      current = media_item_with_attachments(%{source_id: source.id, uploaded_at: now()})
+      older = media_item_with_attachments(%{source_id: source.id, uploaded_at: now_minus(1, :day)})
+
+      assert Enum.map(PodcastHelpers.persisted_media_items_for(source, limit: 2), & &1.id) == [current.id, older.id]
+    end
+
+    test "fills the limit with older media items if newer ones' files are missing" do
+      source = source_fixture()
+
+      oldest = media_item_with_attachments(%{source_id: source.id, uploaded_at: now_minus(2, :days)})
+      older = media_item_with_attachments(%{source_id: source.id, uploaded_at: now_minus(1, :day)})
+      current = media_item_with_attachments(%{source_id: source.id, uploaded_at: now()})
+      File.rm!(current.media_filepath)
+
+      assert [found] = PodcastHelpers.persisted_media_items_for(source, limit: 1)
+      assert found.id == older.id
+
+      File.rm!(older.media_filepath)
+
+      assert [found] = PodcastHelpers.persisted_media_items_for(source, limit: 1)
+      assert found.id == oldest.id
     end
   end
 

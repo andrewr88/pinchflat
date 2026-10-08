@@ -198,6 +198,18 @@ defmodule PinchflatWeb.MediaItemControllerTest do
       assert {"content-type", "video/mp4; charset=utf-8"} in conn.resp_headers
     end
 
+    # MIME doesn't know some of the containers yt-dlp produces, eg: Matroska
+    test "sets the content type for containers that MIME doesn't know", %{conn: conn} do
+      media_item = media_item_with_attachments()
+      mkv_filepath = String.replace_suffix(media_item.media_filepath, ".mp4", ".mkv")
+      File.rename!(media_item.media_filepath, mkv_filepath)
+      Repo.update!(Ecto.Changeset.change(media_item, media_filepath: mkv_filepath))
+
+      conn = get(conn, ~p"/media/#{media_item.uuid}/stream")
+
+      assert {"content-type", "video/x-matroska; charset=utf-8"} in conn.resp_headers
+    end
+
     test "sets the content length", %{conn: conn} do
       media_item = media_item_with_attachments()
       filesize = File.stat!(media_item.media_filepath).size

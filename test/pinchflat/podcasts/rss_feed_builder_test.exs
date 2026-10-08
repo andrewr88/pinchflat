@@ -95,6 +95,13 @@ defmodule Pinchflat.Podcasts.RssFeedBuilderTest do
                ~s(<itunes:image href="http://localhost:8945/sources/#{source.uuid}/feed_image.jpg"></itunes:image>)
              )
     end
+
+    test "omits the feed image if there isn't one", %{source: source} do
+      doc = source |> RssFeedBuilder.build() |> parse_xml()
+
+      assert :xmerl_xpath.string(~c"/rss/channel/image", doc) == []
+      assert :xmerl_xpath.string(~c"/rss/channel/itunes:image", doc) == []
+    end
   end
 
   describe "build/2 when testing media XML" do
@@ -136,6 +143,16 @@ defmodule Pinchflat.Podcasts.RssFeedBuilderTest do
       assert xpath_string(doc, "//item/description") == description
     end
 
+    test "escapes the title so it can't inject markup into the feed", %{source: source} do
+      title = ~s(a</title><enclosure url="x"/><title>b)
+      media_item_with_attachments(%{source_id: source.id, title: title})
+
+      doc = source |> RssFeedBuilder.build() |> parse_xml()
+
+      assert length(:xmerl_xpath.string(~c"//item/enclosure", doc)) == 1
+      assert xpath_string(doc, "//item/title") == title
+    end
+
     test "returns well-formed XML if the description contains a CDATA terminator", %{source: source} do
       media_item_with_attachments(%{source_id: source.id, description: "]]>"})
 
@@ -163,6 +180,43 @@ defmodule Pinchflat.Podcasts.RssFeedBuilderTest do
       assert String.contains?(item_xml, ~s(url="http://localhost:8945/media/#{media_item.uuid}/stream.mp4"))
       assert String.contains?(item_xml, ~s(length="1234"))
       assert String.contains?(item_xml, ~s(type="video/mp4"))
+    end
+
+    # MIME doesn't know some of the containers yt-dlp produces (eg: m4a) and podcast clients
+    # reject the application/octet-stream it'd give them
+    test "returns the enclosure's type for containers that MIME doesn't know", %{source: source} do
+      media_item = media_item_with_attachments(%{source_id: source.id})
+      m4a_filepath = String.replace_suffix(media_item.media_filepath, ".mp4", ".m4a")
+      File.rename!(media_item.media_filepath, m4a_filepath)
+      Repo.update!(change(media_item, media_filepath: m4a_filepath))
+
+      doc = source |> RssFeedBuilder.build() |> parse_xml()
+
+      assert xpath_string(doc, "//item/enclosure/@type") == "audio/mp4"
+    end
+
+    test "returns the file's size as the enclosure's length if the media's size isn't known", %{source: source} do
+      media_item = media_item_with_attachments(%{source_id: source.id, media_size_bytes: nil})
+
+      doc = source |> RssFeedBuilder.build() |> parse_xml()
+
+      assert xpath_string(doc, "//item/enclosure/@length") == to_string(File.stat!(media_item.media_filepath).size)
+    end
+
+    test "returns the media's duration", %{source: source} do
+      media_item_with_attachments(%{source_id: source.id, duration_seconds: 123})
+
+      doc = source |> RssFeedBuilder.build() |> parse_xml()
+
+      assert xpath_string(doc, "//item/itunes:duration") == "123"
+    end
+
+    test "omits the duration if the media's duration isn't known", %{source: source} do
+      media_item_with_attachments(%{source_id: source.id, duration_seconds: nil})
+
+      doc = source |> RssFeedBuilder.build() |> parse_xml()
+
+      assert :xmerl_xpath.string(~c"//item/itunes:duration", doc) == []
     end
 
     test "returns image tags if the media has a thumbnail", %{source: source} do

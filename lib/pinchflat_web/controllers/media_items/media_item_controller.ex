@@ -6,6 +6,7 @@ defmodule PinchflatWeb.MediaItems.MediaItemController do
   alias Pinchflat.Repo
   alias Pinchflat.Media
   alias Pinchflat.Media.MediaItem
+  alias Pinchflat.Utils.MimeUtils
   alias Pinchflat.Downloading.MediaDownloadWorker
 
   # Only the media item form's fields are taken from the request. The app sets the others itself,
@@ -78,7 +79,7 @@ defmodule PinchflatWeb.MediaItems.MediaItemController do
     # The filepath is nil once the media's files are deleted, but stream URLs live on in podcast feeds
     if media_item.media_filepath && File.exists?(media_item.media_filepath) do
       file_size = File.stat!(media_item.media_filepath).size
-      mime_type = MIME.from_path(media_item.media_filepath)
+      mime_type = MimeUtils.from_path(media_item.media_filepath)
 
       case parse_range(conn, file_size) do
         {:ok, {start_pos, end_pos}} ->

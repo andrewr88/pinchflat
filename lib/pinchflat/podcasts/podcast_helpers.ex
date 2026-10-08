@@ -11,6 +11,9 @@ defmodule Pinchflat.Podcasts.PodcastHelpers do
   alias Pinchflat.Metadata.MediaMetadata
   alias Pinchflat.Metadata.SourceMetadata
 
+  # The most media items a podcast feed includes
+  @default_limit 2_000
+
   @doc """
   Returns a list of sources that are not marked for deletion.
 
@@ -32,20 +35,37 @@ defmodule Pinchflat.Podcasts.PodcastHelpers do
   has been deleted or moved, but it's also fairly generally useful
   so I could see this being moved in the future.
 
+  Ordered newest first, with ties broken by ID so the order is the same every time.
+
   Options:
-    - limit: integer - the maximum number of media items to return
+    - limit: integer - the maximum number of media items to return. Defaults to 2,000
 
   Returns: [%MediaItem{}]
   """
   def persisted_media_items_for(source, opts \\ []) do
-    limit = Keyword.get(opts, :limit, 1_000)
+    limit = Keyword.get(opts, :limit, @default_limit)
 
     MediaQuery.new()
     |> where(^dynamic(^MediaQuery.for_source(source) and ^MediaQuery.downloaded()))
-    |> order_by(desc: :uploaded_at)
-    |> Repo.maybe_limit(limit)
-    |> Repo.all()
-    |> Enum.filter(fn media_item -> File.exists?(media_item.media_filepath) end)
+    |> order_by(desc: :uploaded_at, desc: :id)
+    |> stream_in_batches(limit)
+    |> Stream.filter(&File.exists?(&1.media_filepath))
+    |> Enum.take(limit)
+  end
+
+  @doc """
+  Selects an episode image for a media item, ensuring it exists on disk.
+
+  Returns: {:ok, filepath} | {:error, :no_suitable_image}
+  """
+  def select_episode_image(media_item) do
+    filepath = media_item.thumbnail_filepath
+
+    if filepath && File.exists?(filepath) do
+      {:ok, filepath}
+    else
+      {:error, :no_suitable_image}
+    end
   end
 
   @doc """
@@ -89,5 +109,17 @@ defmodule Pinchflat.Podcasts.PodcastHelpers do
     source_images = get_images_by_preference(source_with_preloads, [])
 
     source_images ++ [media_item_metadata.thumbnail_filepath]
+  end
+
+  # Runs the query lazily, a batch at a time, so batches are only fetched while the caller is
+  # still taking items. Here, that's until there are enough media items whose files exist
+  defp stream_in_batches(query, batch_size) do
+    Stream.unfold(0, fn batch_offset ->
+      case query |> limit(^batch_size) |> offset(^batch_offset) |> Repo.all() do
+        [] -> nil
+        batch -> {batch, batch_offset + batch_size}
+      end
+    end)
+    |> Stream.concat()
   end
 end
