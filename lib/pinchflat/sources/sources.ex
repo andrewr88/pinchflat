@@ -77,7 +77,7 @@ defmodule Pinchflat.Sources do
   @doc """
   Creates a source. May attempt to pull additional source details from the
   original_url (if provided). Will attempt to start indexing the source's
-  media if successfully inserted.
+  media if successfully inserted and enabled.
 
   Runs an initial `change_source` check to ensure most of the source is valid
   before making an expensive API call. Runs it through `Repo.insert` even
@@ -469,7 +469,7 @@ defmodule Pinchflat.Sources do
     # Rebuild subtitle_filepaths. yt-dlp names subtitles after the media file:
     # <media filepath without extension>.<lang>.<subtitle extension>
     updates =
-      if media_item.subtitle_filepaths && length(media_item.subtitle_filepaths) > 0 do
+      if media_item.subtitle_filepaths && media_item.subtitle_filepaths != [] do
         new_media_rootname = Path.rootname(new_media_filepath)
 
         new_subtitle_filepaths =
@@ -807,12 +807,16 @@ defmodule Pinchflat.Sources do
 
   defp maybe_run_indexing_task(changeset, source) do
     case changeset.data do
-      # If the changeset is new (not persisted), attempt indexing no matter what
+      # If the changeset is new (not persisted), attempt indexing whatever the index frequency,
+      # unless the source is disabled. Nothing downstream checks `enabled`, so indexing jobs for
+      # a disabled source would index and download anyway. Enabling it is handled as an update
       %{__meta__: %{state: :built}} ->
-        SlowIndexingHelpers.kickoff_indexing_task(source)
+        if source.enabled do
+          SlowIndexingHelpers.kickoff_indexing_task(source)
 
-        if Ecto.Changeset.get_field(changeset, :fast_index) do
-          FastIndexingHelpers.kickoff_indexing_task(source)
+          if Ecto.Changeset.get_field(changeset, :fast_index) do
+            FastIndexingHelpers.kickoff_indexing_task(source)
+          end
         end
 
       # If the record has been persisted, only run indexing if the

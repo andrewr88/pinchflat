@@ -491,6 +491,57 @@ defmodule Pinchflat.SourcesTest do
     end
   end
 
+  describe "create_source/2 when the source is disabled" do
+    test "doesn't schedule indexing until the source is enabled" do
+      expect(YtDlpRunnerMock, :run, &channel_mock/5)
+
+      valid_attrs = %{
+        media_profile_id: media_profile_fixture().id,
+        original_url: "https://www.youtube.com/channel/abc123",
+        enabled: false,
+        index_frequency_minutes: 60
+      }
+
+      assert {:ok, %Source{enabled: false} = source} = Sources.create_source(valid_attrs)
+      refute_enqueued(worker: MediaCollectionIndexingWorker, args: %{"id" => source.id})
+
+      assert {:ok, %Source{}} = Sources.update_source(source, %{enabled: true})
+      assert_enqueued(worker: MediaCollectionIndexingWorker, args: %{"id" => source.id})
+    end
+
+    test "doesn't schedule fast indexing until the source is enabled" do
+      expect(YtDlpRunnerMock, :run, &channel_mock/5)
+
+      valid_attrs = %{
+        media_profile_id: media_profile_fixture().id,
+        original_url: "https://www.youtube.com/channel/abc123",
+        enabled: false,
+        fast_index: true
+      }
+
+      assert {:ok, %Source{enabled: false} = source} = Sources.create_source(valid_attrs)
+      refute_enqueued(worker: FastIndexingWorker, args: %{"id" => source.id})
+      refute_enqueued(worker: MediaCollectionIndexingWorker, args: %{"id" => source.id})
+
+      assert {:ok, %Source{}} = Sources.update_source(source, %{enabled: true})
+      assert_enqueued(worker: FastIndexingWorker, args: %{"id" => source.id})
+    end
+
+    test "still kicks off a metadata storage worker" do
+      expect(YtDlpRunnerMock, :run, &channel_mock/5)
+
+      valid_attrs = %{
+        media_profile_id: media_profile_fixture().id,
+        original_url: "https://www.youtube.com/channel/abc123",
+        enabled: false
+      }
+
+      assert {:ok, %Source{} = source} = Sources.create_source(valid_attrs)
+
+      assert_enqueued(worker: SourceMetadataStorageWorker, args: %{"id" => source.id})
+    end
+  end
+
   describe "update_source/3" do
     test "updates with valid data updates the source" do
       source = source_fixture()
