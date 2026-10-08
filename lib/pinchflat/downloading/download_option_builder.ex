@@ -79,6 +79,8 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
     ]
   end
 
+  # Subtitles can't be embedded in audio, so `embed_subs` does nothing for audio (not even
+  # fetching subtitles to embed). `download_subs` is unaffected
   defp subtitle_options(media_profile) do
     mapped_struct = Map.from_struct(media_profile)
 
@@ -91,7 +93,7 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
         {{:download_auto_subs, true}, %{download_subs: true}} ->
           acc ++ [:write_auto_subs]
 
-        {{:download_auto_subs, true}, %{embed_subs: true}} ->
+        {{:download_auto_subs, true}, %{embed_subs: true, preferred_resolution: pr}} when pr != :audio ->
           acc ++ [:write_auto_subs]
 
         {{:embed_subs, true}, %{preferred_resolution: pr}} when pr != :audio ->
@@ -100,7 +102,7 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
         {{:sub_langs, sub_langs}, %{download_subs: true}} ->
           acc ++ [sub_langs: sub_langs]
 
-        {{:sub_langs, sub_langs}, %{embed_subs: true}} ->
+        {{:sub_langs, sub_langs}, %{embed_subs: true, preferred_resolution: pr}} when pr != :audio ->
           acc ++ [sub_langs: sub_langs]
 
         _ ->
@@ -243,10 +245,7 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
   # The final path must be inside the media directory, however the template and the names in
   # it combine. Raises (like an unparseable template would) since every caller needs a path
   defp ensure_in_base_directory!(output_path) do
-    # The trailing `/` stops a sibling like `/downloads-other` passing for `/downloads`
-    base_directory_prefix = String.trim_trailing(Path.expand(base_directory()), "/") <> "/"
-
-    if String.starts_with?(Path.expand(output_path), base_directory_prefix) do
+    if FSUtils.inside_directory?(output_path, base_directory()) do
       output_path
     else
       raise "Output path #{inspect(output_path)} is outside the media directory #{inspect(base_directory())}"

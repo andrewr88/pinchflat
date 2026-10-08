@@ -6,6 +6,7 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
   import Pinchflat.ProfilesFixtures
 
   alias Pinchflat.Media
+  alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Downloading.MediaDownloader
 
   setup do
@@ -785,26 +786,38 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
 
   describe "download_for_media_item/3 when testing NFO generation" do
     setup do
-      stub(YtDlpRunnerMock, :run, fn
-        _url, :download, _opts, _ot, _addl -> {:ok, render_metadata(:media_metadata)}
-        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
-        _url, :download_thumbnail, _opts, _ot, _addl -> {:ok, ""}
-      end)
+      media_filepath = Path.join(directory_removed_on_exit(:media_directory), "media.mkv")
+      stub_download_to(media_filepath)
 
-      :ok
+      {:ok, %{media_filepath: media_filepath}}
     end
 
-    test "generates an NFO file if the source is set to download NFOs" do
+    test "generates an NFO file if the source is set to download NFOs", %{media_filepath: media_filepath} do
       profile = media_profile_fixture(%{download_nfo: true})
       source = source_fixture(%{media_profile_id: profile.id})
       media_item = media_item_fixture(%{source_id: source.id})
 
       assert {:ok, updated_media_item} = MediaDownloader.download_for_media_item(media_item)
 
-      assert String.ends_with?(updated_media_item.nfo_filepath, ".nfo")
+      assert updated_media_item.nfo_filepath == Path.rootname(media_filepath) <> ".nfo"
       assert File.exists?(updated_media_item.nfo_filepath)
+    end
 
-      File.rm!(updated_media_item.nfo_filepath)
+    # The media file's path comes from yt-dlp
+    test "doesn't generate an NFO file next to media outside the media directory" do
+      media_filepath = Path.join(directory_removed_on_exit(:tmpfile_directory), "media.mkv")
+      nfo_filepath = Path.rootname(media_filepath) <> ".nfo"
+      stub_download_to(media_filepath)
+
+      profile = media_profile_fixture(%{download_nfo: true})
+      source = source_fixture(%{media_profile_id: profile.id})
+      media_item = media_item_fixture(%{source_id: source.id})
+
+      assert {:ok, updated_media_item} = MediaDownloader.download_for_media_item(media_item)
+
+      assert updated_media_item.media_filepath == media_filepath
+      assert updated_media_item.nfo_filepath == nil
+      refute File.exists?(nfo_filepath)
     end
 
     test "does not generate an NFO file if the source is set to not download NFOs" do
@@ -816,6 +829,105 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
 
       assert updated_media_item.nfo_filepath == nil
     end
+  end
+
+  # A redownload (eg: "Redownload Existing") doesn't overwrite the media file, so one that's already on
+  # disk is the same file afterwards if its path hasn't changed
+  describe "download_for_media_item/3 when testing redownloads of existing media" do
+    setup do
+      media_item =
+        %{media_downloaded_at: now_minus(10, :days)}
+        |> media_item_with_attachments()
+        |> Repo.preload([:metadata, source: :media_profile])
+
+      {:ok, %{media_item: media_item}}
+    end
+
+    test "keeps the download date if the media file is left in place", %{media_item: media_item} do
+      stub_download_to(media_item.media_filepath)
+
+      assert {:ok, updated_media_item} = MediaDownloader.download_for_media_item(media_item, redownload?: true)
+
+      assert updated_media_item.media_filepath == media_item.media_filepath
+      assert updated_media_item.media_downloaded_at == media_item.media_downloaded_at
+    end
+
+    test "keeps the download date if the media file is left in place after recovering from an error", %{
+      media_item: media_item
+    } do
+      expect(YtDlpRunnerMock, :run, 2, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download, _opts, _ot, _addl -> {:error, "Unable to communicate with SponsorBlock", 1}
+      end)
+
+      expect(YtDlpRunnerMock, :run, 3, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download, _opts, _ot, _addl -> {:ok, render_metadata_with_filepath(media_item.media_filepath)}
+        _url, :download_thumbnail, _opts, _ot, _addl -> {:ok, ""}
+      end)
+
+      assert {:recovered, updated_media_item, _message} =
+               MediaDownloader.download_for_media_item(media_item, redownload?: true)
+
+      assert updated_media_item.media_downloaded_at == media_item.media_downloaded_at
+    end
+
+    test "sets the download date if it's not a redownload", %{media_item: media_item} do
+      stub_download_to(media_item.media_filepath)
+
+      assert {:ok, updated_media_item} = MediaDownloader.download_for_media_item(media_item)
+
+      assert DateTime.diff(DateTime.utc_now(), updated_media_item.media_downloaded_at) < 2
+    end
+
+    test "sets the download date if the media file is at a new path", %{media_item: media_item} do
+      stub_download_to(Path.join(Path.dirname(media_item.media_filepath), "renamed.mkv"))
+
+      assert {:ok, updated_media_item} = MediaDownloader.download_for_media_item(media_item, redownload?: true)
+
+      assert DateTime.diff(DateTime.utc_now(), updated_media_item.media_downloaded_at) < 2
+    end
+
+    test "sets the download date if the media file was missing", %{media_item: media_item} do
+      File.rm!(media_item.media_filepath)
+      stub_download_to(media_item.media_filepath)
+
+      assert {:ok, updated_media_item} = MediaDownloader.download_for_media_item(media_item, redownload?: true)
+
+      assert DateTime.diff(DateTime.utc_now(), updated_media_item.media_downloaded_at) < 2
+    end
+  end
+
+  # yt-dlp downloads the media to the given path (unless it's already there)
+  defp stub_download_to(media_filepath) do
+    stub(YtDlpRunnerMock, :run, fn
+      _url, :get_downloadable_status, _opts, _ot, _addl ->
+        {:ok, "{}"}
+
+      _url, :download, _opts, _ot, _addl ->
+        if !File.exists?(media_filepath), do: FilesystemUtils.write_p!(media_filepath, "media")
+
+        {:ok, render_metadata_with_filepath(media_filepath)}
+
+      _url, :download_thumbnail, _opts, _ot, _addl ->
+        {:ok, ""}
+    end)
+  end
+
+  defp directory_removed_on_exit(parent_config_key) do
+    directory =
+      Path.join(Application.get_env(:pinchflat, parent_config_key), "media_downloader_test_#{:rand.uniform(1_000_000)}")
+
+    on_exit(fn -> File.rm_rf!(directory) end)
+
+    directory
+  end
+
+  defp render_metadata_with_filepath(media_filepath) do
+    :media_metadata
+    |> render_parsed_metadata()
+    |> Map.put("filepath", media_filepath)
+    |> Phoenix.json_library().encode!()
   end
 
   # A title like this is rejected by MediaItem's changeset (see issue #549), so saving it fails

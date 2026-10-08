@@ -203,6 +203,61 @@ defmodule Pinchflat.Utils.FilesystemUtilsTest do
     end
   end
 
+  describe "inside_directory?/2" do
+    test "returns true for paths below the directory" do
+      assert FilesystemUtils.inside_directory?("/tmp/test/media/file.mp4", "/tmp/test/media")
+      assert FilesystemUtils.inside_directory?("/tmp/test/media/foo/bar/file.mp4", "/tmp/test/media/")
+      assert FilesystemUtils.inside_directory?("/tmp/test/media/foo/../file.mp4", "/tmp/test/media")
+      assert FilesystemUtils.inside_directory?("/tmp//test/media/./file.mp4", "/tmp/test/../test/media")
+    end
+
+    test "returns false for the directory itself" do
+      refute FilesystemUtils.inside_directory?("/tmp/test/media", "/tmp/test/media")
+      refute FilesystemUtils.inside_directory?("/tmp/test/media/", "/tmp/test/media")
+      refute FilesystemUtils.inside_directory?("/tmp/test/media/foo/..", "/tmp/test/media")
+    end
+
+    test "returns false for paths outside the directory" do
+      refute FilesystemUtils.inside_directory?("/tmp/test/file.mp4", "/tmp/test/media")
+      refute FilesystemUtils.inside_directory?("/tmp/test/media/../file.mp4", "/tmp/test/media")
+      refute FilesystemUtils.inside_directory?("/tmp/test/media/foo/../../file.mp4", "/tmp/test/media")
+      refute FilesystemUtils.inside_directory?("/etc/passwd", "/tmp/test/media")
+    end
+
+    test "returns false for a sibling whose name starts with the directory's" do
+      refute FilesystemUtils.inside_directory?("/tmp/test/media-other/file.mp4", "/tmp/test/media")
+      refute FilesystemUtils.inside_directory?("/tmp/test/mediafile.mp4", "/tmp/test/media")
+    end
+
+    test "expands relative paths from the current directory" do
+      assert FilesystemUtils.inside_directory?("file.mp4", File.cwd!())
+      refute FilesystemUtils.inside_directory?("../file.mp4", File.cwd!())
+    end
+  end
+
+  describe "delete_file_inside_directory/2" do
+    test "deletes a file inside the directory, like delete_file_and_remove_empty_directories/1" do
+      directory = Path.join(tmpfile_directory(), "delete_file_inside_directory")
+      filepath = Path.join(directory, "file.json")
+      FilesystemUtils.write_p!(filepath, "")
+
+      assert :ok = FilesystemUtils.delete_file_inside_directory(filepath, tmpfile_directory())
+
+      refute File.exists?(filepath)
+      refute File.exists?(directory)
+    end
+
+    test "doesn't delete a file outside the directory" do
+      filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
+      directory = Path.join(tmpfile_directory(), "delete_file_inside_directory")
+
+      assert {:error, :outside_directory} = FilesystemUtils.delete_file_inside_directory(filepath, directory)
+      assert File.exists?(filepath)
+
+      File.rm!(filepath)
+    end
+  end
+
   describe "cp_p!/2" do
     test "copies a file from source to destination" do
       source = "#{tmpfile_directory()}/source.json"

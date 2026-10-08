@@ -1,10 +1,11 @@
 defmodule Pinchflat.Downloading.MediaDownloadWorker do
   @moduledoc false
 
+  # Unique per media item, whatever the other args: two jobs at once would download to the same files
   use Oban.Worker,
     queue: :media_fetching,
     priority: 5,
-    unique: [period: :infinity, states: [:available, :scheduled, :retryable, :executing]],
+    unique: [period: :infinity, keys: [:id], states: [:available, :scheduled, :retryable, :executing]],
     tags: ["media_item", "media_fetching", "show_in_dashboard"]
 
   require Logger
@@ -21,9 +22,18 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
   @doc """
   Starts the media_item media download worker and creates a task for the media_item.
 
+  A media item has at most one download job queued or running, whatever its args, so
+  this returns `{:error, :duplicate_job}` if there's one already. The exception is a
+  forced download: it's an explicit request from the user, so it replaces a queued
+  (not running) download, which might otherwise not download at all or be waiting to retry.
+
   Returns {:ok, %Task{}} | {:error, :duplicate_job} | {:error, %Ecto.Changeset{}}
   """
   def kickoff_with_task(media_item, job_args \\ %{}, job_opts \\ []) do
+    if job_args[:force] || job_args["force"] do
+      Tasks.delete_pending_tasks_for(media_item, "MediaDownloadWorker")
+    end
+
     %{id: media_item.id}
     |> Map.merge(job_args)
     |> MediaDownloadWorker.new(job_opts)
@@ -42,7 +52,8 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
       if the source is set to not download media
     - `redownload?`: also downloads media that has already been downloaded, without overwriting
       existing files (eg: to fetch thumbnails or subtitles that have since been enabled). Does not
-      force download if the source is set to not download media
+      force download if the source is set to not download media. A media file left in place keeps
+      its download date
 
   Returns :ok | {:error, any, ...any}
   """
@@ -111,23 +122,16 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
 
   defp download_media_and_schedule_jobs(media_item, is_quality_upgrade, should_force, is_redownload) do
     overwrite_behaviour = if should_force || is_quality_upgrade, do: :force_overwrites, else: :no_force_overwrites
-    override_opts = [overwrite_behaviour: overwrite_behaviour]
+    override_opts = [overwrite_behaviour: overwrite_behaviour, redownload?: is_redownload]
 
     case MediaDownloader.download_for_media_item(media_item, override_opts) do
       {:ok, downloaded_media_item} ->
-        {:ok, updated_media_item} =
-          Media.update_media_item(downloaded_media_item, %{
-            media_size_bytes: compute_media_filesize(downloaded_media_item),
-            media_redownloaded_at: get_redownloaded_at(downloaded_media_item, is_quality_upgrade, is_redownload)
-          })
+        finish_download(media_item, downloaded_media_item, is_quality_upgrade, is_redownload)
 
-        :ok = FileSyncing.delete_outdated_files(media_item, updated_media_item)
-        run_user_script(:media_downloaded, updated_media_item)
-
-        :ok
-
-      {:recovered, _media_item, _message} ->
-        {:error, :retry}
+      # The download completed after recovering from an error (eg: by retrying without SponsorBlock),
+      # so it's finished like any other. The error is kept in the media item's `last_error`
+      {:recovered, downloaded_media_item, _message} ->
+        finish_download(media_item, downloaded_media_item, is_quality_upgrade, is_redownload)
 
       {:error, :unsuitable_for_download, _message} ->
         {:ok, :non_retry}
@@ -135,6 +139,19 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
       {:error, _error_atom, message} ->
         action_on_error(message)
     end
+  end
+
+  defp finish_download(media_item, downloaded_media_item, is_quality_upgrade, is_redownload) do
+    {:ok, updated_media_item} =
+      Media.update_media_item(downloaded_media_item, %{
+        media_size_bytes: compute_media_filesize(downloaded_media_item),
+        media_redownloaded_at: get_redownloaded_at(downloaded_media_item, is_quality_upgrade, is_redownload)
+      })
+
+    :ok = FileSyncing.delete_outdated_files(media_item, updated_media_item)
+    run_user_script(:media_downloaded, updated_media_item)
+
+    :ok
   end
 
   defp compute_media_filesize(media_item) do

@@ -155,6 +155,47 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilderTest do
 
       refute {:sub_langs, "en"} in res
     end
+
+    # Subtitles can't be embedded in audio, so embedding them doesn't fetch any for audio either
+    test "builds the subtitle options for each combination of settings", %{media_item: media_item} do
+      download_subs = [:write_subs, convert_subs: "srt"]
+      langs = [sub_langs: "en"]
+
+      # {download_subs, download_auto_subs, embed_subs} => {video options, audio options}
+      cases = %{
+        {false, false, false} => {[], []},
+        {true, false, false} => {download_subs ++ langs, download_subs ++ langs},
+        {false, true, false} => {[], []},
+        {false, false, true} => {[:embed_subs] ++ langs, []},
+        {true, true, false} =>
+          {download_subs ++ [:write_auto_subs] ++ langs, download_subs ++ [:write_auto_subs] ++ langs},
+        {true, false, true} => {download_subs ++ [:embed_subs] ++ langs, download_subs ++ langs},
+        {false, true, true} => {[:write_auto_subs, :embed_subs] ++ langs, []},
+        {true, true, true} =>
+          {download_subs ++ [:write_auto_subs, :embed_subs] ++ langs, download_subs ++ [:write_auto_subs] ++ langs}
+      }
+
+      for {{download, download_auto, embed}, {video_options, audio_options}} <- cases,
+          {resolution, expected_options} <- [{:"1080p", video_options}, {:audio, audio_options}] do
+        # Reloaded so the update applies to the media profile as the previous case left it
+        media_item =
+          media_item
+          |> Repo.preload([source: :media_profile], force: true)
+          |> update_media_profile_attribute(%{
+            download_subs: download,
+            download_auto_subs: download_auto,
+            embed_subs: embed,
+            sub_langs: "en",
+            preferred_resolution: resolution
+          })
+
+        assert {:ok, res} = DownloadOptionBuilder.build(media_item)
+
+        # The settings are on both sides so a failure shows which case it is
+        settings = {download, download_auto, embed, resolution}
+        assert {settings, Enum.sort(subtitle_options(res))} == {settings, Enum.sort(expected_options)}
+      end
+    end
   end
 
   describe "build/1 when testing thumbnail options" do
@@ -543,6 +584,14 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilderTest do
       assert {:format_sort, "res:1080,+codec:avc:m4a"} in options
       assert {:remux_video, "mp4"} in options
     end
+  end
+
+  defp subtitle_options(options) do
+    Enum.filter(options, fn
+      option when option in [:write_subs, :write_auto_subs, :embed_subs] -> true
+      {key, _value} -> key in [:convert_subs, :sub_langs]
+      _option -> false
+    end)
   end
 
   defp update_media_profile_attribute(media_item_with_preloads, attrs) do

@@ -8,6 +8,7 @@ defmodule Pinchflat.MediaTest do
 
   alias Pinchflat.Media
   alias Pinchflat.Media.MediaItem
+  alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Metadata.MetadataFileHelpers
 
   alias Pinchflat.YtDlp.Media, as: YtDlpMedia
@@ -803,6 +804,18 @@ defmodule Pinchflat.MediaTest do
       refute File.exists?(media_item.media_filepath)
     end
 
+    # The paths come from yt-dlp
+    test "doesn't delete files outside the media directory" do
+      outside_filepath = FilesystemUtils.generate_metadata_tmpfile(:mkv)
+      media_item = media_item_with_attachments(%{nfo_filepath: outside_filepath})
+
+      assert {:ok, _} = Media.delete_media_item(media_item, delete_files: true)
+      refute File.exists?(media_item.media_filepath)
+      assert File.exists?(outside_filepath)
+
+      File.rm!(outside_filepath)
+    end
+
     test "deletes the media item's metadata files" do
       stub(YtDlpRunnerMock, :run, fn _url, :download_thumbnail, _opts, _ot, _addl -> {:ok, ""} end)
       media_item = Repo.preload(media_item_with_attachments(), [:metadata, :source])
@@ -887,6 +900,27 @@ defmodule Pinchflat.MediaTest do
       assert File.exists?(media_item.media_filepath)
       assert {:ok, _} = Media.delete_media_files(media_item)
       refute File.exists?(media_item.media_filepath)
+    end
+
+    # The paths come from yt-dlp
+    test "doesn't delete files outside the media directory" do
+      outside_filepaths = Enum.map([:mkv, :jpg, :json, :srt, :nfo], &FilesystemUtils.generate_metadata_tmpfile/1)
+      [media_filepath, thumbnail_filepath, metadata_filepath, subtitle_filepath, nfo_filepath] = outside_filepaths
+
+      media_item =
+        media_item_fixture(%{
+          media_filepath: media_filepath,
+          thumbnail_filepath: thumbnail_filepath,
+          metadata_filepath: metadata_filepath,
+          subtitle_filepaths: [["en", subtitle_filepath]],
+          nfo_filepath: nfo_filepath
+        })
+
+      assert {:ok, updated_media_item} = Media.delete_media_files(media_item)
+      assert Enum.all?(outside_filepaths, &File.exists?/1)
+      assert updated_media_item.media_filepath == nil
+
+      Enum.each(outside_filepaths, &File.rm!/1)
     end
 
     test "does not delete the media item's metadata files" do

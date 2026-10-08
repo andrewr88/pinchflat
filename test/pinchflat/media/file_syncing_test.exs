@@ -4,6 +4,7 @@ defmodule Pinchflat.Media.FileSyncingTest do
   import Pinchflat.MediaFixtures
 
   alias Pinchflat.Media.FileSyncing
+  alias Pinchflat.Utils.FilesystemUtils
 
   describe "delete_outdated_files/2" do
     test "deletes outdated non-subtitle files" do
@@ -62,6 +63,24 @@ defmodule Pinchflat.Media.FileSyncingTest do
       assert :ok = FileSyncing.delete_outdated_files(old_media_item, new_media_item)
 
       assert File.exists?(get_subtitle_filepath(old_media_item, "en"))
+    end
+
+    # The paths come from yt-dlp
+    test "doesn't delete outdated files outside the media directory" do
+      new_media_item = media_item_with_attachments()
+      outside_filepath = FilesystemUtils.generate_metadata_tmpfile(:mkv)
+      outside_subtitle_filepath = FilesystemUtils.generate_metadata_tmpfile(:srt)
+
+      old_media_item =
+        media_item_fixture(%{media_filepath: outside_filepath, subtitle_filepaths: [["en", outside_subtitle_filepath]]})
+
+      assert :ok = FileSyncing.delete_outdated_files(old_media_item, new_media_item)
+
+      assert File.exists?(outside_filepath)
+      assert File.exists?(outside_subtitle_filepath)
+
+      File.rm!(outside_filepath)
+      File.rm!(outside_subtitle_filepath)
     end
   end
 

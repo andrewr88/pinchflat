@@ -29,6 +29,10 @@ defmodule Pinchflat.Downloading.MediaDownloader do
   is set to not download media. However, I'm not enforcing that here since I need this for testing.
   This may change in the future but I'm not stressed.
 
+  Takes the `override_opts` of `DownloadOptionBuilder.build/2`, plus:
+    - `redownload?`: the media is already downloaded and is downloaded again without overwriting
+      its media file. If that file is still at the media file's path, it keeps its `media_downloaded_at`
+
   Returns {:ok, %MediaItem{}} | {:error, atom(), String.t()} | {:recovered, %MediaItem{}, String.t()}
   """
   def download_for_media_item(%MediaItem{} = media_item, override_opts \\ []) do
@@ -56,8 +60,9 @@ defmodule Pinchflat.Downloading.MediaDownloader do
   #     and return the result of that
   # - If the precheck passes but the download fails, it normally returns {:error, :download_failed, message}
   #   - However, there are some errors we can recover from (eg: failure to communicate with SponsorBlock).
-  #     In this case, we attempt the download anyway and update the media item with what details we do have.
-  #     This case returns {:recovered, updated_media_item, message}
+  #     In this case, we retry the download without SponsorBlock or, if that fails, use the JSON yt-dlp
+  #     writes once it's finished a download (in case it did anyway). Either way the download is complete,
+  #     so the media item is updated. This case returns {:recovered, updated_media_item, message}
   #   - If we attempt a retry but it fails, we return {:error, :unrecoverable, message}
   # - If there is an unknown error unrelated to the above, we return {:error, :unknown, message}
   # - Finally, if there is no error, we update the media item with the parsed JSON and return {:ok, updated_media_item}
@@ -76,10 +81,12 @@ defmodule Pinchflat.Downloading.MediaDownloader do
   defp attempt_download_and_update_for_media_item(media_item, override_opts) do
     output_filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
     media_with_preloads = Repo.preload(media_item, [:metadata, source: :media_profile])
+    # Checked before downloading, which can put a new media file there
+    kept_media_filepath = kept_media_filepath(media_with_preloads, override_opts)
 
     case download_with_options(media_item.original_url, media_with_preloads, output_filepath, override_opts) do
       {:ok, parsed_json} ->
-        update_media_item_from_parsed_json(media_with_preloads, parsed_json)
+        update_media_item_from_parsed_json(media_with_preloads, parsed_json, kept_media_filepath)
 
       {:error, :unsuitable_for_download} ->
         message =
@@ -93,7 +100,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
         Logger.error("yt-dlp download error for media item ##{media_with_preloads.id}: #{inspect(message)}")
 
         if String.contains?(to_string(message), recoverable_errors()) do
-          attempt_recovery_from_error(media_with_preloads, output_filepath, message, override_opts)
+          attempt_recovery_from_error(media_with_preloads, output_filepath, message, override_opts, kept_media_filepath)
         else
           {:error, :download_failed, message}
         end
@@ -105,7 +112,13 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     end
   end
 
-  defp attempt_recovery_from_error(media_with_preloads, output_filepath, error_message, override_opts) do
+  defp attempt_recovery_from_error(
+         media_with_preloads,
+         output_filepath,
+         error_message,
+         override_opts,
+         kept_media_filepath
+       ) do
     # Check if this is a SponsorBlock error that we can retry without sponsorblock
     is_sponsorblock_error = String.contains?(to_string(error_message), "SponsorBlock")
 
@@ -123,7 +136,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
           by retrying without SponsorBlock options.
           """)
 
-          update_recovered_media_item(media_with_preloads, parsed_json, error_message)
+          update_recovered_media_item(media_with_preloads, parsed_json, error_message, kept_media_filepath)
 
         {:error, :unsuitable_for_download} ->
           Logger.warning("""
@@ -131,7 +144,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
           Falling back to parse recovery.
           """)
 
-          attempt_parse_recovery(media_with_preloads, output_filepath, error_message)
+          attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
 
         {:error, retry_error_message, _exit_code} ->
           Logger.error("""
@@ -139,18 +152,18 @@ defmodule Pinchflat.Downloading.MediaDownloader do
           """)
 
           # Fall back to trying to parse the original output file
-          attempt_parse_recovery(media_with_preloads, output_filepath, error_message)
+          attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
 
         err ->
           Logger.error("""
           Unexpected error during SponsorBlock retry for media item ##{media_with_preloads.id}: #{inspect(err)}
           """)
 
-          attempt_parse_recovery(media_with_preloads, output_filepath, error_message)
+          attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
       end
     else
       # For non-SponsorBlock errors, try to parse the output file as before
-      attempt_parse_recovery(media_with_preloads, output_filepath, error_message)
+      attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
     end
   end
 
@@ -163,16 +176,17 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     download_with_options(media_with_preloads.original_url, media_with_preloads, new_output_filepath, override_opts)
   end
 
-  defp attempt_parse_recovery(media_with_preloads, output_filepath, error_message) do
+  # yt-dlp only writes the JSON to the output file once the media is downloaded and moved into place
+  # (it's printed `after_move`), so if it's there, the download finished despite the error
+  defp attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath) do
     with {:ok, contents} <- File.read(output_filepath),
          {:ok, parsed_json} <- Phoenix.json_library().decode(contents) do
       Logger.info("""
-      Recovery from yt-dlp error seems possible. Updating media item ##{media_with_preloads.id}
-      with parsed JSON from partial download attempt. Full download will be re-attemted in future
-      anyway
+      Recovered from yt-dlp error for media item ##{media_with_preloads.id}: yt-dlp still finished
+      the download, so the media item is updated from the JSON it wrote
       """)
 
-      update_recovered_media_item(media_with_preloads, parsed_json, error_message)
+      update_recovered_media_item(media_with_preloads, parsed_json, error_message, kept_media_filepath)
     else
       err ->
         Logger.error("Unable to recover error for media item ##{media_with_preloads.id}: #{inspect(err)}")
@@ -181,19 +195,20 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     end
   end
 
-  defp update_recovered_media_item(media_with_preloads, parsed_json, error_message) do
-    with {:ok, updated_media_item} <- update_media_item_from_parsed_json(media_with_preloads, parsed_json) do
+  defp update_recovered_media_item(media_with_preloads, parsed_json, error_message, kept_media_filepath) do
+    with {:ok, updated_media_item} <-
+           update_media_item_from_parsed_json(media_with_preloads, parsed_json, kept_media_filepath) do
       {:recovered, updated_media_item, error_message}
     end
   end
 
   # Returns {:ok, %MediaItem{}} | {:error, :update_failed, String.t()}
-  defp update_media_item_from_parsed_json(media_with_preloads, parsed_json) do
+  defp update_media_item_from_parsed_json(media_with_preloads, parsed_json, kept_media_filepath) do
     parsed_attrs =
       parsed_json
       |> MetadataParser.parse_for_media_item()
       |> Map.merge(%{
-        media_downloaded_at: DateTime.utc_now(),
+        media_downloaded_at: media_downloaded_at(media_with_preloads, parsed_json["filepath"], kept_media_filepath),
         culled_at: nil,
         nfo_filepath: determine_nfo_filepath(media_with_preloads, parsed_json)
       })
@@ -214,6 +229,25 @@ defmodule Pinchflat.Downloading.MediaDownloader do
         {:error, :update_failed, message}
     end
   end
+
+  # A redownload doesn't overwrite the media file, so if one is on disk before downloading, it's
+  # left in place unless the download's media file has a different path (eg: the output template
+  # changed). Returns its path, or nil if the media file is downloaded anew
+  defp kept_media_filepath(media_item, override_opts) do
+    filepath = media_item.media_filepath
+
+    if Keyword.get(override_opts, :redownload?, false) && filepath && File.exists?(filepath) do
+      filepath
+    end
+  end
+
+  # A media file that's left in place (ie: the download's media file is the kept one) keeps its download
+  # date, which is what retention and quality upgrades go by. Anything else has just been downloaded
+  defp media_downloaded_at(media_item, kept_media_filepath, kept_media_filepath) when is_binary(kept_media_filepath) do
+    media_item.media_downloaded_at || DateTime.utc_now()
+  end
+
+  defp media_downloaded_at(_media_item, _media_filepath, _kept_media_filepath), do: DateTime.utc_now()
 
   # A metadata record needs a thumbnail (the column is NOT NULL) but fetching one can fail on its own
   # (eg: rate limiting). If it does, the record is left as-is so the download itself still gets saved.
@@ -261,11 +295,20 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     end)
   end
 
+  # The NFO goes next to the media file. That path comes from yt-dlp, so it's only written inside the media directory
   defp determine_nfo_filepath(media_item, parsed_json) do
     if media_item.source.media_profile.download_nfo do
       filepath = Path.rootname(parsed_json["filepath"]) <> ".nfo"
 
-      NfoBuilder.build_and_store_for_media_item(filepath, parsed_json)
+      if FilesystemUtils.inside_directory?(filepath, Application.get_env(:pinchflat, :media_directory)) do
+        NfoBuilder.build_and_store_for_media_item(filepath, parsed_json)
+      else
+        Logger.warning(
+          "Not writing an NFO for media item ##{media_item.id} to #{inspect(filepath)}: it's outside the media directory"
+        )
+
+        nil
+      end
     else
       nil
     end

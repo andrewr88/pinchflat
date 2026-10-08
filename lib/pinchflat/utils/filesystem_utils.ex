@@ -2,6 +2,8 @@ defmodule Pinchflat.Utils.FilesystemUtils do
   @moduledoc """
   Utility methods for working with the filesystem
   """
+  require Logger
+
   alias Pinchflat.Media
   alias Pinchflat.Utils.StringUtils
 
@@ -115,6 +117,36 @@ defmodule Pinchflat.Utils.FilesystemUtils do
 
       err ->
         err
+    end
+  end
+
+  @doc """
+  Checks if a path is inside a directory (at any depth, but not the directory itself) once
+  both are expanded. Whole path segments are compared, so `/downloads-other/file` isn't inside
+  `/downloads`. Symlinks aren't resolved.
+
+  Returns boolean()
+  """
+  def inside_directory?(path, directory) do
+    directory_parts = Path.split(Path.expand(directory))
+    path_parts = Path.split(Path.expand(path))
+
+    List.starts_with?(path_parts, directory_parts) and length(path_parts) > length(directory_parts)
+  end
+
+  @doc """
+  Deletes a file like `delete_file_and_remove_empty_directories/1`, but only if it's inside the
+  given directory (see `inside_directory?/2`). A file anywhere else is left as-is and logged.
+
+  Returns :ok | {:error, :outside_directory} | {:error, any()}
+  """
+  def delete_file_inside_directory(filepath, directory) do
+    if inside_directory?(filepath, directory) do
+      delete_file_and_remove_empty_directories(filepath)
+    else
+      Logger.warning("Not deleting #{inspect(filepath)} since it's outside #{inspect(directory)}")
+
+      {:error, :outside_directory}
     end
   end
 

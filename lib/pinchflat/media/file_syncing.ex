@@ -57,6 +57,8 @@ defmodule Pinchflat.Media.FileSyncing do
     #   - The new attributes are the ones we're interested in keeping
     #   - If the old attributes have a key that doesn't exist in the new attributes, don't touch it.
     #     This is good for archiving but may be unpopular for other users so this may change.
+    #   - The paths come from yt-dlp, so a file outside the media directory is never deleted
+    media_directory = Application.get_env(:pinchflat, :media_directory)
 
     Enum.each(new_attributes, fn {key, new_filepath} ->
       old_filepath = Map.get(old_attributes, key)
@@ -64,7 +66,7 @@ defmodule Pinchflat.Media.FileSyncing do
       files_exist_on_disk = files_have_changed && File.exists?(old_filepath) && File.exists?(new_filepath)
 
       if files_exist_on_disk && !FSUtils.filepaths_reference_same_file?(old_filepath, new_filepath) do
-        FSUtils.delete_file_and_remove_empty_directories(old_filepath)
+        FSUtils.delete_file_inside_directory(old_filepath, media_directory)
       end
     end)
   end

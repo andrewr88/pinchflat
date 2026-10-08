@@ -164,6 +164,7 @@ defmodule Pinchflat.Media do
   @doc """
   Deletes a media_item, its associated tasks, and our internal metadata files.
   Can optionally delete the media_item's media files (media, thumbnail, subtitles, etc).
+  Media files outside the media directory are never deleted.
 
   Returns {:ok, %MediaItem{}} | {:error, %Ecto.Changeset{}}
   """
@@ -185,6 +186,7 @@ defmodule Pinchflat.Media do
   @doc """
   Deletes the tasks and media files associated with a media_item but leaves the
   media_item in the database. Does not delete anything to do with associated metadata.
+  Media files outside the media directory aren't deleted (but their paths are still cleared).
 
   Optionally accepts a second argument `addl_attrs` which will be merged into the
   media_item before it is updated. Useful for setting things like `prevent_download`
@@ -209,8 +211,10 @@ defmodule Pinchflat.Media do
     MediaItem.changeset(media_item, attrs)
   end
 
+  # The paths come from yt-dlp, so a file outside the media directory is never deleted
   defp do_delete_media_files(media_item) do
     mapped_struct = Map.from_struct(media_item)
+    media_directory = Application.get_env(:pinchflat, :media_directory)
 
     MediaItem.filepath_attributes()
     |> Enum.map(fn
@@ -219,7 +223,7 @@ defmodule Pinchflat.Media do
     end)
     |> List.flatten()
     |> Enum.filter(&is_binary/1)
-    |> Enum.each(&FilesystemUtils.delete_file_and_remove_empty_directories/1)
+    |> Enum.each(&FilesystemUtils.delete_file_inside_directory(&1, media_directory))
 
     {:ok, media_item}
   end
