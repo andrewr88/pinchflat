@@ -6,7 +6,6 @@ defmodule Pinchflat.Lifecycle.Notifications.AppriseCommandRunner do
   apprise command.
   """
 
-  @callback run(binary(), keyword()) :: :ok | {:error, binary()}
-  @callback run(List.t(), keyword()) :: :ok | {:error, binary()}
+  @callback run(nil | binary() | [binary()], keyword()) :: {:ok, binary()} | {:error, :no_servers} | {:error, binary()}
   @callback version() :: {:ok, binary()} | {:error, binary()}
 end

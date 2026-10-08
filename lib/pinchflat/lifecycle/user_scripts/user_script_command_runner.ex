@@ -6,5 +6,5 @@ defmodule Pinchflat.Lifecycle.UserScripts.UserScriptCommandRunner do
   user's command.
   """
 
-  @callback run(atom(), map()) :: :ok | {:error, binary()}
+  @callback run(atom(), map()) :: {:ok, :no_executable} | {:ok, binary(), integer()}
 end

@@ -70,9 +70,12 @@ defmodule PinchflatWeb.Endpoint do
   # that would probably be more difficult for end-users to set up than just
   # having the application figure it out.
   defp override_base_url(conn, _opts) do
+    # The header is client-controllable and ends up in generated URLs so only known schemes are trusted
     new_scheme =
-      case get_req_header(conn, "x-forwarded-proto") do
-        [scheme] -> scheme
+      with [forwarded_proto] <- get_req_header(conn, "x-forwarded-proto"),
+           scheme when scheme in ["http", "https"] <- forwarded_proto |> String.trim() |> String.downcase() do
+        scheme
+      else
         _ -> to_string(conn.scheme)
       end
 

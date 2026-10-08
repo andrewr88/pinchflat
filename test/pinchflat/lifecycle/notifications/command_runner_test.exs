@@ -1,7 +1,10 @@
 defmodule Pinchflat.Lifecycle.Notifications.CommandRunnerTest do
   use Pinchflat.DataCase
 
+  import ExUnit.CaptureLog
+
   alias Pinchflat.Lifecycle.Notifications.CommandRunner, as: Runner
+  alias Pinchflat.Utils.CliUtils
 
   @original_executable Application.compile_env(:pinchflat, :apprise_executable)
 
@@ -42,6 +45,21 @@ defmodule Pinchflat.Lifecycle.Notifications.CommandRunnerTest do
       assert {:error, :no_servers} = Runner.run(nil, [])
       assert {:error, :no_servers} = Runner.run("", [])
       assert {:error, :no_servers} = Runner.run([], [])
+    end
+
+    test "does not log the servers since they can contain credentials" do
+      # The test env only logs critical messages so let the command logging through
+      Logger.put_module_level(CliUtils, :all)
+      on_exit(fn -> Logger.delete_module_level(CliUtils) end)
+
+      # The default stub echoes its args as output (which is also logged) but apprise
+      # doesn't, so use an executable without output to only check the logged args
+      wrap_executable("/bin/false", fn ->
+        log = capture_log(fn -> Runner.run("tgram://123456:secret-bot-token/987654", title: "A title") end)
+
+        assert log =~ "--title"
+        refute log =~ "secret-bot-token"
+      end)
     end
   end
 

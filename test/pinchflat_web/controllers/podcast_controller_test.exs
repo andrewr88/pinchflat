@@ -20,6 +20,31 @@ defmodule PinchflatWeb.PodcastControllerTest do
       assert conn.resp_body =~ "text=\"#{source.custom_name}\""
     end
 
+    test "uses the x-forwarded-proto header (case-insensitively) for the URL scheme", %{conn: conn} do
+      source = source_fixture()
+      route_token = Settings.get!(:route_token)
+
+      conn =
+        conn
+        |> put_req_header("x-forwarded-proto", "HTTPS")
+        |> get(~p"/sources/opml.xml?#{[route_token: route_token]}")
+
+      assert conn.resp_body =~ ~s"https://www.example.com/sources/#{source.uuid}/feed.xml"
+    end
+
+    test "ignores an x-forwarded-proto header that isn't http or https", %{conn: conn} do
+      source = source_fixture()
+      route_token = Settings.get!(:route_token)
+
+      conn =
+        conn
+        |> put_req_header("x-forwarded-proto", "https://evil.example.com/?")
+        |> get(~p"/sources/opml.xml?#{[route_token: route_token]}")
+
+      assert conn.resp_body =~ ~s"http://www.example.com/sources/#{source.uuid}/feed.xml"
+      refute conn.resp_body =~ "evil.example.com"
+    end
+
     test "returns 401 if the route token is incorrect", %{conn: conn} do
       conn = get(conn, ~p"/sources/opml.xml?route_token=incorrect")
 
