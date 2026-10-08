@@ -2,6 +2,7 @@ defmodule PinchflatWeb.Sources.SourceLive.IndexTableLiveTest do
   use PinchflatWeb.ConnCase
 
   import Phoenix.LiveViewTest
+  import Pinchflat.MediaFixtures
   import Pinchflat.SourcesFixtures
   import Pinchflat.ProfilesFixtures
 
@@ -32,6 +33,29 @@ defmodule PinchflatWeb.Sources.SourceLive.IndexTableLiveTest do
       {:ok, _view, html} = live_isolated(conn, IndexTableLive, session: create_session())
 
       refute html =~ source.custom_name
+    end
+  end
+
+  describe "when testing media counts" do
+    test "counts pending media for a source with nothing downloaded", %{conn: conn} do
+      source = source_fixture()
+      media_item_fixture(source_id: source.id, media_filepath: nil)
+
+      {:ok, view, _html} = live_isolated(conn, IndexTableLive, session: create_session())
+
+      assert count_text(view, source, "pending") == "1"
+      assert count_text(view, source, "downloaded") == "0"
+    end
+
+    test "counts pending and downloaded media for a source with both", %{conn: conn} do
+      source = source_fixture()
+      media_item_fixture(source_id: source.id, media_filepath: nil)
+      media_item_fixture(source_id: source.id)
+
+      {:ok, view, _html} = live_isolated(conn, IndexTableLive, session: create_session())
+
+      assert count_text(view, source, "pending") == "1"
+      assert count_text(view, source, "downloaded") == "1"
     end
   end
 
@@ -128,6 +152,15 @@ defmodule PinchflatWeb.Sources.SourceLive.IndexTableLiveTest do
     view
     |> element(selector)
     |> render()
+  end
+
+  # The number shown in the source's row for a count column, e.g. "pending"
+  defp count_text(view, source, tab) do
+    view
+    |> render_element(~s(a[href="/sources/#{source.id}/#tab-#{tab}"]))
+    |> Floki.parse_fragment!()
+    |> Floki.text()
+    |> String.trim()
   end
 
   defp create_session do
