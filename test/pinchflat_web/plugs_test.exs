@@ -162,5 +162,16 @@ defmodule PinchflatWeb.PlugsTest do
       assert conn.status == 401
       assert conn.resp_body == "Unauthorized"
     end
+
+    test "does not allow access when the route token is not a string", %{conn: conn} do
+      # A query string like `?route_token[]=<token>` is parsed into a list
+      route_token = Settings.get!(:route_token)
+      conn = %{conn | query_params: %{"route_token" => [route_token]}}
+
+      conn = Plugs.token_protected_route(conn, [])
+
+      assert conn.status == 401
+      assert conn.resp_body == "Unauthorized"
+    end
   end
 end
