@@ -28,6 +28,14 @@ defmodule Pinchflat.Podcasts.RssFeedBuilderTest do
       assert String.contains?(res, ~s(<title>A &amp; B</title>))
     end
 
+    test "strips characters that are not allowed in XML" do
+      source = source_fixture(%{custom_name: "x\vy"})
+
+      doc = source |> RssFeedBuilder.build() |> parse_xml()
+
+      assert xpath_string(doc, "/rss/channel/title") == "xy"
+    end
+
     test "can optionally apply a limit to media items", %{source: source} do
       good_media = media_item_with_attachments(%{source_id: source.id})
 
@@ -114,7 +122,26 @@ defmodule Pinchflat.Podcasts.RssFeedBuilderTest do
       assert String.contains?(item_xml, ~s(<description>#{media_item.description}</description>))
       assert String.contains?(item_xml, ~s(<itunes:author>#{source.custom_name}</itunes:author>))
       assert String.contains?(item_xml, ~s(<itunes:subtitle>#{media_item.title}</itunes:subtitle>))
-      assert String.contains?(item_xml, ~s(<itunes:summary><![CDATA[#{media_item.description}]]></itunes:summary>))
+      assert String.contains?(item_xml, ~s(<itunes:summary>#{media_item.description}</itunes:summary>))
+    end
+
+    test "escapes the description so it can't inject markup into the feed", %{source: source} do
+      description = ~s(a]]></itunes:summary><enclosure url="https://evil.example/x.mp3"/><itunes:summary><![CDATA[b)
+      media_item_with_attachments(%{source_id: source.id, description: description})
+
+      doc = source |> RssFeedBuilder.build() |> parse_xml()
+
+      assert length(:xmerl_xpath.string(~c"//item/enclosure", doc)) == 1
+      assert xpath_string(doc, "//item/itunes:summary") == description
+      assert xpath_string(doc, "//item/description") == description
+    end
+
+    test "returns well-formed XML if the description contains a CDATA terminator", %{source: source} do
+      media_item_with_attachments(%{source_id: source.id, description: "]]>"})
+
+      doc = source |> RssFeedBuilder.build() |> parse_xml()
+
+      assert xpath_string(doc, "//item/itunes:summary") == "]]>"
     end
 
     test "returns pubDate based off the media's uploaded_at", %{source: source} do
@@ -169,5 +196,19 @@ defmodule Pinchflat.Podcasts.RssFeedBuilderTest do
 
   defp format_date(date) do
     Calendar.strftime(date, @datetime_format)
+  end
+
+  # xmerl is a strict parser, so this fails the test if the feed isn't well-formed.
+  # It's given the raw bytes because the document declares itself as UTF-8
+  defp parse_xml(xml) do
+    {doc, _rest} = xml |> :binary.bin_to_list() |> :xmerl_scan.string(quiet: true)
+
+    doc
+  end
+
+  defp xpath_string(doc, path) do
+    {:xmlObj, :string, value} = :xmerl_xpath.string(~c"string(#{path})", doc)
+
+    List.to_string(value)
   end
 end

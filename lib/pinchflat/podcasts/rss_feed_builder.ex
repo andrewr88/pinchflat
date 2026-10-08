@@ -91,7 +91,7 @@ defmodule Pinchflat.Podcasts.RssFeedBuilder do
       />
       <itunes:author>#{safe(source.custom_name)}</itunes:author>
       <itunes:subtitle>#{safe(media_item.title)}</itunes:subtitle>
-      <itunes:summary><![CDATA[#{media_item.description}]]></itunes:summary>
+      <itunes:summary>#{safe(media_item.description)}</itunes:summary>
 
       #{item_image_path && ~s(<itunes:image href="#{safe(item_image_path)}"></itunes:image>)}
       #{item_image_path && ~s(<podcast:images srcset="#{safe(item_image_path)}" />)}
