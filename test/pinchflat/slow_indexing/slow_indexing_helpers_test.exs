@@ -352,20 +352,6 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpersTest do
       refute log =~ "LAST LINE"
     end
 
-    test "uses the media yt-dlp wrote if it exits with 1 (ie: only some media failed)", %{source: source} do
-      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
-        File.write!(Keyword.fetch!(addl_opts, :output_filepath), source_attributes_return_fixture())
-
-        {:error, @ytdlp_error, 1}
-      end)
-
-      media_items = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
-
-      assert ["video1", "video2", "video3"] == Enum.map(media_items, & &1.media_id)
-      assert Repo.reload!(source).last_indexed_at
-      assert [_, _, _] = all_enqueued(worker: MediaDownloadWorker)
-    end
-
     test "doesn't use the media yt-dlp wrote if it exits for another reason", %{source: source} do
       stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
         File.write!(Keyword.fetch!(addl_opts, :output_filepath), source_attributes_return_fixture())
@@ -375,6 +361,199 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpersTest do
 
       assert {:error, _} = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
       assert Repo.reload!(source).last_indexed_at == nil
+    end
+  end
+
+  describe "index_and_enqueue_download_for_media_items/2 when yt-dlp exits with 1 after writing some media" do
+    # yt-dlp carries on after an error so it exits with 1 whether a single media item failed (eg: it's
+    # members-only) or something like a bot check failed every media item after the ones it wrote
+    setup do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        File.write!(Keyword.fetch!(addl_opts, :output_filepath), media_attributes_json(30))
+
+        {:error, "ERROR: [youtube] x: Sign in to confirm you're not a bot", 1}
+      end)
+
+      :ok
+    end
+
+    test "creates the media items yt-dlp wrote and enqueues their downloads" do
+      source = source_fixture(collection_type: :channel, last_indexed_at: nil)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert Repo.aggregate(where(MediaItem, source_id: ^source.id), :count) == 30
+      assert length(all_enqueued(worker: MediaDownloadWorker)) == 30
+    end
+
+    test "doesn't mark a source that's never been indexed as indexed so its next index is a full one" do
+      source = source_fixture(collection_type: :channel, last_indexed_at: nil)
+
+      assert {:error, :indexing_incomplete} = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert %{last_indexed_at: nil} = source = Repo.reload!(source)
+
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, opts, _ot, _addl_opts ->
+        refute :break_on_existing in opts
+        refute Keyword.has_key?(opts, :download_archive)
+
+        {:ok, ""}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+    end
+
+    test "marks a source that's been indexed before as indexed" do
+      source = source_fixture(collection_type: :channel, last_indexed_at: now_minus(1, :days))
+
+      media_items = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert length(media_items) == 30
+      assert DateTime.diff(DateTime.utc_now(), Repo.reload!(source).last_indexed_at) < 2
+    end
+  end
+
+  describe "index_and_enqueue_download_for_media_items/2 when reporting the media items it created" do
+    setup do
+      parent = self()
+      opts = [on_new_media_items: &send(parent, {:new_media_items, &1})]
+
+      {:ok, opts: opts, watcher_poll_interval: Application.get_env(:pinchflat, :file_watcher_poll_interval)}
+    end
+
+    test "reports the media items it created", %{source: source} = context do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        {:ok, source_attributes_return_fixture()}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source, context.opts)
+
+      assert_received {:new_media_items, media_items}
+      assert ["video1", "video2", "video3"] == media_items |> Enum.map(& &1.media_id) |> Enum.sort()
+    end
+
+    test "doesn't report media items that already existed", %{source: source} = context do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        {:ok, source_attributes_return_fixture()}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source, context.opts)
+
+      assert_received {:new_media_items, []}
+    end
+
+    test "doesn't report media items something else created while indexing (eg: a fast index)", context do
+      source = context.source
+
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        media_item_fixture(source_id: source.id, media_id: "video1")
+
+        {:ok, source_attributes_return_fixture()}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source, context.opts)
+
+      assert_received {:new_media_items, media_items}
+      assert ["video2", "video3"] == media_items |> Enum.map(& &1.media_id) |> Enum.sort()
+    end
+
+    test "reports the media items the file follower created", %{source: source} = context do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        File.write!(Keyword.fetch!(addl_opts, :output_filepath), source_attributes_return_fixture())
+        :timer.sleep(context.watcher_poll_interval * 2)
+
+        # Only the file follower can have created media items since this doesn't return any
+        {:ok, ""}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source, context.opts)
+
+      assert_received {:new_media_items, media_items}
+      assert ["video1", "video2", "video3"] == media_items |> Enum.map(& &1.media_id) |> Enum.sort()
+    end
+
+    test "doesn't report media items something else created before the file follower got to them", context do
+      source = context.source
+
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        media_item_fixture(source_id: source.id, media_id: "video1")
+        File.write!(Keyword.fetch!(addl_opts, :output_filepath), source_attributes_return_fixture())
+        :timer.sleep(context.watcher_poll_interval * 2)
+
+        {:ok, ""}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source, context.opts)
+
+      assert_received {:new_media_items, media_items}
+      assert ["video2", "video3"] == media_items |> Enum.map(& &1.media_id) |> Enum.sort()
+    end
+
+    test "reports the media items the file follower created even if indexing fails", %{source: source} = context do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        File.write!(Keyword.fetch!(addl_opts, :output_filepath), source_attributes_return_fixture())
+        :timer.sleep(context.watcher_poll_interval * 2)
+
+        {:error, "Killed", 137}
+      end)
+
+      assert {:error, _} = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source, context.opts)
+
+      assert_received {:new_media_items, media_items}
+      assert ["video1", "video2", "video3"] == media_items |> Enum.map(& &1.media_id) |> Enum.sort()
+    end
+  end
+
+  describe "index_and_enqueue_download_for_media_items/2 when testing temporary files" do
+    test "deletes yt-dlp's output file and the download archive once it's done" do
+      source = source_fixture(collection_type: :channel, last_indexed_at: now())
+      parent = self()
+
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, opts, _ot, addl_opts ->
+        tmpfiles = [Keyword.fetch!(addl_opts, :output_filepath), Keyword.fetch!(opts, :download_archive)]
+        assert Enum.all?(tmpfiles, &File.exists?/1)
+        send(parent, {:tmpfiles, tmpfiles})
+
+        {:ok, source_attributes_return_fixture()}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert_received {:tmpfiles, tmpfiles}
+      refute Enum.any?(tmpfiles, &File.exists?/1)
+    end
+
+    test "deletes yt-dlp's output file once it's used the media yt-dlp wrote before exiting with 1" do
+      source = source_fixture(last_indexed_at: now())
+      parent = self()
+
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        output_filepath = Keyword.fetch!(addl_opts, :output_filepath)
+        File.write!(output_filepath, source_attributes_return_fixture())
+        send(parent, {:output_filepath, output_filepath})
+
+        {:error, "ERROR: [youtube] abc123: Private video", 1}
+      end)
+
+      assert [_, _, _] = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert_received {:output_filepath, output_filepath}
+      refute File.exists?(output_filepath)
+    end
+
+    test "deletes yt-dlp's output file if indexing raises", %{source: source} do
+      parent = self()
+
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        send(parent, {:output_filepath, Keyword.fetch!(addl_opts, :output_filepath)})
+
+        raise "yt-dlp blew up"
+      end)
+
+      assert_raise RuntimeError, fn -> SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source) end
+
+      assert_received {:output_filepath, output_filepath}
+      refute File.exists?(output_filepath)
     end
   end
 
@@ -539,6 +718,55 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpersTest do
 
       assert [] = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
     end
+
+    test "creates a media item once from a line it read before the line was fully written", %{source: source} do
+      watcher_poll_interval = Application.get_env(:pinchflat, :file_watcher_poll_interval)
+      [line | _] = String.split(source_attributes_return_fixture(), "\n")
+      {first_part, second_part} = String.split_at(line, div(String.length(line), 2))
+
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        filepath = Keyword.fetch!(addl_opts, :output_filepath)
+
+        # Waits between the writes so the file watcher reads each part of the line on its own
+        File.write!(filepath, first_part)
+        :timer.sleep(watcher_poll_interval * 2)
+        File.write!(filepath, second_part <> "\n", [:append])
+        :timer.sleep(watcher_poll_interval * 2)
+
+        {:ok, line}
+      end)
+
+      assert [%MediaItem{media_id: "video1"}] = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert Repo.aggregate(MediaItem, :count, :id) == 1
+      assert [_] = all_enqueued(worker: MediaDownloadWorker)
+    end
+
+    test "keeps indexing if creating a media item from the file raises", %{source: source} do
+      # The test env only logs critical messages so let this module's logging through
+      Logger.put_module_level(SlowIndexingHelpers, :all)
+      on_exit(fn -> Logger.delete_module_level(SlowIndexingHelpers) end)
+
+      watcher_poll_interval = Application.get_env(:pinchflat, :file_watcher_poll_interval)
+      # Parsing an invalid upload date raises. The file watcher is linked to the index so, like any error
+      # there (eg: the database being busy), that would kill the index too
+      raising_line = Phoenix.json_library().encode!(%{id: "raising_video", title: "Video", upload_date: "20211345"})
+
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        contents = raising_line <> "\n" <> source_attributes_return_fixture()
+        File.write!(Keyword.fetch!(addl_opts, :output_filepath), contents)
+        :timer.sleep(watcher_poll_interval * 2)
+
+        {:ok, source_attributes_return_fixture()}
+      end)
+
+      log =
+        capture_log(fn ->
+          assert [_, _, _] = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+        end)
+
+      assert log =~ "raising_video"
+      assert Repo.aggregate(MediaItem, :count, :id) == 3
+    end
   end
 
   describe "index_and_enqueue_download_for_media_items when testing the download archive" do
@@ -614,5 +842,52 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpersTest do
 
       SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
     end
+
+    test "the download archive has the source's 21st to 70th newest media items" do
+      source = source_fixture(%{collection_type: :channel, last_indexed_at: now()})
+      other_source = source_fixture(%{collection_type: :channel})
+
+      # The other source's media is uploaded in between this source's so some of it would make it into the
+      # archive if it wasn't limited to the source. It's all created in a random order so neither the
+      # creation order nor the IDs line up with the upload dates
+      media_items =
+        1..80
+        |> Enum.flat_map(fn n ->
+          [{source, n, now_minus(n, :days)}, {other_source, n, DateTime.add(now_minus(n, :days), 12, :hour)}]
+        end)
+        |> Enum.shuffle()
+        |> Enum.map(fn {s, n, uploaded_at} -> {n, media_item_fixture(source_id: s.id, uploaded_at: uploaded_at)} end)
+
+      expected_lines =
+        for {n, media_item} <- media_items, media_item.source_id == source.id, n in 21..70 do
+          "youtube #{media_item.media_id}"
+        end
+
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, opts, _ot, _addl_opts ->
+        archive_lines = opts |> Keyword.fetch!(:download_archive) |> File.read!() |> String.split("\n")
+
+        assert length(archive_lines) == 50
+        assert Enum.sort(archive_lines) == Enum.sort(expected_lines)
+
+        {:ok, ""}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+    end
+  end
+
+  defp media_attributes_json(count) do
+    Enum.map_join(1..count, "\n", fn n ->
+      Phoenix.json_library().encode!(%{
+        id: "video#{n}",
+        title: "Video #{n}",
+        original_url: "https://example.com/video#{n}",
+        live_status: "not_live",
+        description: "desc#{n}",
+        aspect_ratio: 1.67,
+        duration: 345.67,
+        upload_date: "20210101"
+      })
+    end)
   end
 end

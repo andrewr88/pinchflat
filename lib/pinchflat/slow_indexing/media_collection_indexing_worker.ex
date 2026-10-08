@@ -34,7 +34,8 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorker do
   the provided source, kicks off downloads for each new MediaItem, and
   reschedules the job to run again in the future. It will ALWAYS index a source
   if it's never been indexed before or if `force` is set to `true`, but rescheduling
-  is determined by the `index_frequency_minutes` field.
+  is determined by the `index_frequency_minutes` field. A disabled source isn't
+  indexed (or rescheduled) at all, even if `force` is set.
 
   README: Re-scheduling here works a little different than you may expect.
   The reschedule time is relative to the time the job has actually _completed_.
@@ -58,7 +59,8 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorker do
        for a little speedup (see {Fast,Slow}IndexingHelpers comments for more)
     4. If this job is meant to reschedule (ie: has an index frequency > 0),
        it reschedules itself (even if indexing failed). If not, it runs once and
-       does not reschedule. If that one run fails to index anything, Oban retries it
+       does not reschedule. If that one run fails (including yt-dlp only partially
+       indexing a source for the first time, see `SlowIndexingHelpers`), Oban retries it
     5. If the source uses fast indexing, that job is kicked off as well. It
        uses RSS to run a smaller, faster, and more frequent index. That job
        handles rescheduling itself but largely has a similar behaviour to this
@@ -71,12 +73,23 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorker do
   NOTE: Since indexing can take a LONG time, I should check what happens if an
   application restart occurs while a job is running. Will the job be lost?
 
-  Returns :ok | {:ok, %Task{}} | {:ok, :job_exists} | {:error, :indexing_failed}
+  Returns :ok | {:ok, %Task{}} | {:ok, :job_exists} | {:error, :indexing_failed} | {:error, :indexing_incomplete}
   """
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"id" => source_id} = args}) do
-    source = Sources.get_source!(source_id)
+    source_id
+    |> Sources.get_source!()
+    |> index_source(args)
+  rescue
+    Ecto.NoResultsError -> Logger.info("#{__MODULE__} discarded: source #{source_id} not found")
+    Ecto.StaleEntryError -> Logger.info("#{__MODULE__} discarded: source #{source_id} stale")
+  end
 
+  # Disabling a source deletes its indexing jobs but one can still turn up, eg: if it's forced.
+  # Indexing would also schedule the next index, so the source would be indexed from then on
+  defp index_source(%Source{enabled: false}, _args), do: :ok
+
+  defp index_source(source, args) do
     case {source.index_frequency_minutes, source.last_indexed_at} do
       {index_freq, _} when index_freq > 0 ->
         # If the indexing is on a schedule simply run indexing and reschedule. This
@@ -104,21 +117,21 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorker do
           :ok
         end
     end
-  rescue
-    Ecto.NoResultsError -> Logger.info("#{__MODULE__} discarded: source #{source_id} not found")
-    Ecto.StaleEntryError -> Logger.info("#{__MODULE__} discarded: source #{source_id} stale")
   end
 
   # Nothing reschedules a one-off index so return failures to Oban, letting it retry them
   defp to_job_result({:error, reason}), do: {:error, reason}
   defp to_job_result(_media_items), do: :ok
 
+  # Only the media items this index created are counted. A fast index can create some of the same
+  # media while this runs (eg: they're both kicked off when a source is created) and it sends its own
+  # notification for those
   defp perform_indexing_and_notification(source, indexing_opts) do
     apprise_server = Settings.get!(:apprise_server)
+    notify = &SourceNotifications.send_new_media_notification_for_media_items(apprise_server, source, &1)
+    opts = Keyword.put(indexing_opts, :on_new_media_items, notify)
 
-    SourceNotifications.wrap_new_media_notification(apprise_server, source, fn ->
-      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source, indexing_opts)
-    end)
+    SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source, opts)
   end
 
   defp reschedule_indexing(source) do

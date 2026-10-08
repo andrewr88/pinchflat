@@ -48,5 +48,28 @@ defmodule Pinchflat.SlowIndexing.FileFollowerServerTest do
       :timer.sleep(50)
       assert is_nil(Process.info(pid))
     end
+
+    test "waits for the watcher to stop (eg: so the file can be deleted)", %{pid: pid, tmpfile: tmpfile} do
+      File.write!(tmpfile, "line1\n")
+      parent = self()
+
+      handler = fn _line ->
+        send(parent, :handling_line)
+        :timer.sleep(100)
+      end
+
+      FileFollowerServer.watch_file(pid, tmpfile, handler)
+      assert_receive :handling_line
+
+      assert :ok = FileFollowerServer.stop(pid)
+      refute Process.alive?(pid)
+    end
+
+    test "doesn't mind if the watcher already stopped", %{pid: pid, tmpfile: tmpfile} do
+      FileFollowerServer.watch_file(pid, tmpfile, fn _line -> :noop end)
+      FileFollowerServer.stop(pid)
+
+      assert :ok = FileFollowerServer.stop(pid)
+    end
   end
 end

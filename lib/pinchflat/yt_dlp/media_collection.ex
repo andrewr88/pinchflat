@@ -15,6 +15,8 @@ defmodule Pinchflat.YtDlp.MediaCollection do
   or configuration-related options to pass to the runner.
 
   Runner Options:
+    - :output_filepath - the file yt-dlp writes the media to. Passing it lets the caller read the file
+      once yt-dlp is done (eg: if it fails) and delete it. Defaults to a new temporary file.
     - :file_listener_handler - a function that will be called with the path to the
       file that will be written to when yt-dlp is done. This is useful for
       setting up a file watcher to know when the file is ready to be read.
@@ -29,7 +31,10 @@ defmodule Pinchflat.YtDlp.MediaCollection do
     all_command_opts = [:simulate, :skip_download, :ignore_no_formats_error, :no_warnings] ++ command_opts
     use_cookies = Keyword.get(addl_opts, :use_cookies, false)
     output_template = YtDlpMedia.indexing_output_template()
-    output_filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
+
+    output_filepath =
+      Keyword.get_lazy(addl_opts, :output_filepath, fn -> FilesystemUtils.generate_metadata_tmpfile(:json) end)
+
     file_listener_handler = Keyword.get(addl_opts, :file_listener_handler, false)
     runner_opts = [output_filepath: output_filepath, use_cookies: use_cookies]
     action = :get_media_attributes_for_collection

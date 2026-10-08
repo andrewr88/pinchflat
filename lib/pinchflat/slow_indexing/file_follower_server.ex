@@ -10,6 +10,7 @@ defmodule Pinchflat.SlowIndexing.FileFollowerServer do
 
   @poll_interval_ms Application.compile_env(:pinchflat, :file_watcher_poll_interval)
   @activity_timeout_ms 600_000
+  @stop_timeout_ms 5_000
 
   # Client API
   @doc """
@@ -31,12 +32,24 @@ defmodule Pinchflat.SlowIndexing.FileFollowerServer do
   end
 
   @doc """
-  Stops the file watcher and closes the file.
+  Stops the file watcher and closes the file. Waits (for up to `timeout` ms) for that to happen
+  so the file can be deleted afterwards. The watcher may have already stopped itself.
 
   Returns :ok
   """
-  def stop(process) do
+  def stop(process, timeout \\ @stop_timeout_ms) do
+    ref = Process.monitor(process)
     GenServer.cast(process, :stop)
+
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    after
+      timeout ->
+        Process.demonitor(ref, [:flush])
+        Logger.warning("File follower didn't stop within #{timeout}ms")
+
+        :ok
+    end
   end
 
   # Server Callbacks
@@ -79,7 +92,8 @@ defmodule Pinchflat.SlowIndexing.FileFollowerServer do
     # If there's no new lines written for a certain amount of time, stop the server
     if DateTime.diff(DateTime.utc_now(), last_activity, :millisecond) > @activity_timeout_ms do
       Logger.debug("No activity for #{@activity_timeout_ms}ms. Requesting stop.")
-      stop(self())
+      # Not `stop/1` since that waits for this process to stop
+      GenServer.cast(self(), :stop)
 
       {:noreply, state}
     else
@@ -113,7 +127,7 @@ defmodule Pinchflat.SlowIndexing.FileFollowerServer do
 
       {:error, reason} ->
         Logger.error("Error reading file: #{reason}")
-        stop(self())
+        GenServer.cast(self(), :stop)
 
         {:noreply, state}
     end

@@ -9,21 +9,18 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotifications do
 
   alias Pinchflat.Repo
 
+  # SQLite limits how many parameters a query can have
+  @media_item_ids_per_query 1_000
+
   @doc """
-  Wraps a function that may change the number of pending  or downloaded
-  media items for a source, sending an apprise notification if
-  the count changes.
+  Sends a notification about media items that were just created for a source (eg: by indexing it),
+  counting the ones that are pending download or already downloaded. Nothing is sent if that's none
+  of them or the source is set to not download media.
 
-  Returns the return value of the provided function
+  Returns :ok
   """
-  def wrap_new_media_notification(servers, source, func) do
-    before_count = relevant_media_item_count(source)
-    retval = func.()
-    after_count = relevant_media_item_count(source)
-
-    send_new_media_notification(servers, source, after_count - before_count)
-
-    retval
+  def send_new_media_notification_for_media_items(servers, source, media_items) do
+    send_new_media_notification(servers, source, relevant_media_item_count(source, media_items))
   end
 
   @doc """
@@ -53,24 +50,29 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotifications do
     :ok
   end
 
-  defp relevant_media_item_count(source) do
+  # A source's first index can create thousands of media items so they're counted in batches
+  defp relevant_media_item_count(source, media_items) do
     if source.download_media do
-      pending_media_item_count(source) + downloaded_media_item_count(source)
+      media_items
+      |> Enum.map(& &1.id)
+      |> Enum.chunk_every(@media_item_ids_per_query)
+      |> Enum.map(&relevant_media_item_count_for_ids(source, &1))
+      |> Enum.sum()
     else
       0
     end
   end
 
-  defp pending_media_item_count(source) do
+  defp relevant_media_item_count_for_ids(source, media_item_ids) do
     MediaQuery.new()
     |> MediaQuery.require_assoc(:media_profile)
-    |> where(^dynamic(^MediaQuery.for_source(source) and ^MediaQuery.pending()))
-    |> Repo.aggregate(:count)
-  end
-
-  defp downloaded_media_item_count(source) do
-    MediaQuery.new()
-    |> where(^dynamic(^MediaQuery.for_source(source) and ^MediaQuery.downloaded()))
+    |> where(
+      ^dynamic(
+        [mi],
+        ^MediaQuery.for_source(source) and mi.id in ^media_item_ids and
+          (^MediaQuery.pending() or ^MediaQuery.downloaded())
+      )
+    )
     |> Repo.aggregate(:count)
   end
 

@@ -377,6 +377,16 @@ defmodule PinchflatWeb.SourceControllerTest do
       conn = post(conn, ~p"/sources/#{source.id}/force_index")
       assert redirected_to(conn) == ~p"/sources/#{source.id}"
     end
+
+    test "doesn't index a disabled source and asks for it to be enabled", %{conn: conn} do
+      source = source_fixture(enabled: false)
+
+      conn = post(conn, ~p"/sources/#{source.id}/force_index")
+
+      refute_enqueued(worker: MediaCollectionIndexingWorker)
+      assert redirected_to(conn) == ~p"/sources/#{source.id}"
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) == "Enable this source to index it."
+    end
   end
 
   describe "force_metadata_refresh" do

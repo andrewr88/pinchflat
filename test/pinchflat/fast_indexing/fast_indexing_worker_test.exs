@@ -84,6 +84,15 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
       refute_enqueued(worker: FastIndexingWorker, args: %{"id" => source.id})
     end
 
+    test "does not index or reschedule itself if the source is disabled" do
+      expect(HTTPClientMock, :get, 0, fn _url, _headers, _opts -> {:ok, ""} end)
+      source = source_fixture(fast_index: true, enabled: false)
+
+      assert :ok = perform_job(FastIndexingWorker, %{id: source.id})
+
+      refute_enqueued(worker: FastIndexingWorker, args: %{"id" => source.id})
+    end
+
     test "does not blow up if the record doesn't exist" do
       assert :ok = perform_job(FastIndexingWorker, %{id: 0})
     end

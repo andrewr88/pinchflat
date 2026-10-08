@@ -90,15 +90,26 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
   If yt-dlp fails, the error is logged and `{:error, :indexing_failed}` is returned. The source
   isn't marked as indexed (ie: `last_indexed_at` isn't updated) but any media items the file
   follower created before the failure are kept and downloads are still enqueued for pending
-  media items. The exception is yt-dlp exiting with 1 after writing _some_ media. It does that
-  whenever any single media item fails (eg: members-only, private, or age-restricted media)
-  even though it carries on and writes all the others, so that's treated as a successful index
-  of the media it wrote. Otherwise, one inaccessible media item would fail every index of the source.
+  media items.
+
+  yt-dlp exiting with 1 after writing _some_ media is different since yt-dlp carries on after an
+  error. It does that whenever any single media item fails (eg: members-only, private, or
+  age-restricted media) but also when an error like a bot check fails every media item after
+  the ones it wrote. The media it wrote is indexed either way (logging a warning) and downloads
+  are enqueued. A source that's been indexed before is marked as indexed since, otherwise, one
+  inaccessible media item would fail every index of the source. A source's first index isn't
+  marked as indexed though, and `{:error, :indexing_incomplete}` is returned. Its next index would
+  otherwise use a download archive of the media found here, stopping before it got to anything
+  older, so it'd never be indexed. This way, the next index is a full one again.
 
   Available options:
     - `was_forced`: Whether the indexing was forced by the user
+    - `on_new_media_items`: A function that's called with the media items this index created
+      (ie: that didn't already exist) once it's done, even if it failed. Eg: to notify about new
+      media. Comparing the source's media items from before and after indexing would also count
+      any that something else (eg: a fast index) created for the source in the meantime
 
-  Returns [%MediaItem{} | %Ecto.Changeset{}] | {:error, :indexing_failed}
+  Returns [%MediaItem{} | %Ecto.Changeset{}] | {:error, :indexing_failed} | {:error, :indexing_incomplete}
   """
   def index_and_enqueue_download_for_media_items(%Source{} = source, opts \\ []) do
     # The media_profile is needed to determine the quality options to _then_ determine a more
@@ -110,24 +121,46 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
     # Reload because the source may have been updated during the (long-running) indexing process
     # and important settings like `download_media` may have changed.
     source = Repo.reload!(source)
+    # The file follower has stopped by now so it's reported every media item it created
+    followed_media_items = receive_followed_media_items()
 
-    case indexing_result do
-      {:ok, media_attributes} ->
-        result = Enum.map(media_attributes, &create_media_item_or_changeset(source, &1))
+    {result, created_media_items} = handle_indexing_result(source, indexing_result)
+    # Media items the file follower created are kept even if indexing failed so, either way,
+    # make sure every pending media item has a download enqueued
+    DownloadingHelpers.enqueue_pending_download_tasks(source)
 
-        Sources.update_source(source, %{last_indexed_at: DateTime.utc_now()})
-        DownloadingHelpers.enqueue_pending_download_tasks(source)
+    on_new_media_items = Keyword.get(opts, :on_new_media_items, fn _media_items -> :ok end)
+    on_new_media_items.(Enum.uniq_by(followed_media_items ++ created_media_items, & &1.id))
 
-        result
+    result
+  end
 
-      error ->
-        Logger.error("Failed to index source #{source.id}: #{inspect(error, printable_limit: @logged_output_limit)}")
-        # Media items the file follower created before the failure are kept so, like a successful
-        # index, make sure every pending media item has a download enqueued
-        DownloadingHelpers.enqueue_pending_download_tasks(source)
+  defp handle_indexing_result(source, {:ok, media_attributes}) do
+    {media_items, created_media_items} = create_media_items(source, media_attributes)
+    Sources.update_source(source, %{last_indexed_at: DateTime.utc_now()})
 
-        {:error, :indexing_failed}
+    {media_items, created_media_items}
+  end
+
+  # See the docs above for why a source's first index isn't marked as indexed here
+  defp handle_indexing_result(source, {:partial, media_attributes}) do
+    {media_items, created_media_items} = create_media_items(source, media_attributes)
+
+    if source.last_indexed_at do
+      Sources.update_source(source, %{last_indexed_at: DateTime.utc_now()})
+
+      {media_items, created_media_items}
+    else
+      Logger.warning("Not marking source #{source.id} as indexed since yt-dlp didn't finish its first index")
+
+      {{:error, :indexing_incomplete}, created_media_items}
     end
+  end
+
+  defp handle_indexing_result(source, error) do
+    Logger.error("Failed to index source #{source.id}: #{inspect(error, printable_limit: @logged_output_limit)}")
+
+    {{:error, :indexing_failed}, []}
   end
 
   # The file follower is a GenServer that watches a file for new lines and
@@ -140,47 +173,50 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
   # been processed by the file follower, but if not, the caller handles creation
   # of any media items that were missed/initially failed.
   #
-  # It attempts a graceful shutdown of the file follower after the indexing is done,
-  # but the FileFollowerServer will also stop itself if it doesn't see any activity
-  # for a sufficiently long time.
+  # It shuts down the file follower after the indexing is done, but the FileFollowerServer
+  # will also stop itself if it doesn't see any activity for a sufficiently long time.
   #
   # If yt-dlp fails, its error is returned instead of the FULL result. The exception is
-  # handled by `maybe_use_partial_output/3`, which needs yt-dlp's output file. The handler
-  # is the only place that gets that file's path, so it sends the path back to this process.
+  # handled by `maybe_use_partial_output/3`, which needs yt-dlp's output file. That's why
+  # the file is created here rather than by `MediaCollection`.
+  #
+  # The temporary files (yt-dlp's output and the download archive) are deleted once indexing
+  # is done, even if it raised. The file follower is stopped first so it's done with yt-dlp's output.
   defp setup_file_watcher_and_kickoff_indexing(source, opts) do
     was_forced = Keyword.get(opts, :was_forced, false)
-    {:ok, pid} = FileFollowerServer.start_link()
-    caller = self()
-
-    handler = fn filepath ->
-      send(caller, {:indexing_output_filepath, filepath})
-      setup_file_follower_watcher(pid, filepath, source)
-    end
-
     should_use_cookies = Sources.use_cookies?(source, :indexing)
 
     command_opts =
       [output: DownloadOptionBuilder.build_output_path_for(source)] ++
-        DownloadOptionBuilder.build_quality_options_for(source) ++
-        build_download_archive_options(source, was_forced)
+        DownloadOptionBuilder.build_quality_options_for(source)
 
-    runner_opts = [file_listener_handler: handler, use_cookies: should_use_cookies]
-    result = MediaCollection.get_media_attributes_for_collection(source.original_url, command_opts, runner_opts)
+    archive_options = build_download_archive_options(source, was_forced)
+    output_filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
+    {:ok, pid} = FileFollowerServer.start_link()
+    caller = self()
 
-    FileFollowerServer.stop(pid)
+    handler = fn filepath -> setup_file_follower_watcher(pid, filepath, source, caller) end
+    runner_opts = [output_filepath: output_filepath, file_listener_handler: handler, use_cookies: should_use_cookies]
 
-    receive do
-      {:indexing_output_filepath, filepath} -> maybe_use_partial_output(result, filepath, source)
+    try do
+      source.original_url
+      |> MediaCollection.get_media_attributes_for_collection(command_opts ++ archive_options, runner_opts)
+      |> maybe_use_partial_output(output_filepath, source)
     after
-      0 -> result
+      FileFollowerServer.stop(pid)
+
+      [output_filepath, Keyword.get(archive_options, :download_archive)]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.each(&File.rm/1)
     end
   end
 
   # yt-dlp exits with 1 if ANY media item fails (eg: members-only, private, or age-restricted media)
-  # but it carries on and still writes every other media item to the output file, so use those rather
-  # than failing the whole index. The file follower can't be relied on for this since it can miss lines
-  # written just before yt-dlp exits. Other exit statuses (eg: yt-dlp being killed part-way through)
-  # and a 1 without any media written are left as failures.
+  # but it carries on and still writes every other media item it can to the output file, so use those
+  # rather than failing the whole index. That's only a partial index though (see the docs for
+  # `index_and_enqueue_download_for_media_items/2`). The file follower can't be relied on for this since
+  # it can miss lines written just before yt-dlp exits. Other exit statuses (eg: yt-dlp being killed
+  # part-way through) and a 1 without any media written are left as failures.
   defp maybe_use_partial_output({:error, output, 1} = error, filepath, source) do
     with {:ok, contents} <- File.read(filepath),
          [_ | _] = media_attributes <- parse_media_attributes(contents) do
@@ -191,7 +227,7 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
           "Indexing the #{length(media_attributes)} media item(s) it did find: #{trimmed_output}"
       )
 
-      {:ok, media_attributes}
+      {:partial, media_attributes}
     else
       _ -> error
     end
@@ -210,14 +246,15 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
     end)
   end
 
-  defp setup_file_follower_watcher(pid, filepath, source) do
+  # The handler runs in the file follower's process so it reports the media items it creates
+  # to the indexing process (`caller`)
+  defp setup_file_follower_watcher(pid, filepath, source, caller) do
     FileFollowerServer.watch_file(pid, filepath, fn line ->
       case Phoenix.json_library().decode(line) do
         {:ok, media_attrs} ->
           Logger.debug("FileFollowerServer Handler: Got media attributes: #{inspect(media_attrs)}")
 
-          media_struct = YtDlpMedia.response_to_struct(media_attrs)
-          create_media_item_and_enqueue_download(source, media_struct)
+          create_media_item_and_enqueue_download(source, media_attrs, caller)
 
         err ->
           Logger.debug("FileFollowerServer Handler: Error decoding JSON: #{inspect(err)}")
@@ -227,6 +264,28 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
     end)
   end
 
+  defp receive_followed_media_items(media_items \\ []) do
+    receive do
+      {:followed_media_item_created, media_item} -> receive_followed_media_items([media_item | media_items])
+    after
+      0 -> media_items
+    end
+  end
+
+  # Returns the media items (or changesets) along with the media items that were created here rather
+  # than already existing (eg: having been created by the file follower or a fast index)
+  defp create_media_items(source, media_attributes) do
+    existing_media_ids = source |> list_media_ids() |> MapSet.new()
+    media_items = Enum.map(media_attributes, &create_media_item_or_changeset(source, &1))
+
+    created_media_items =
+      for %MediaItem{} = media_item <- media_items,
+          not MapSet.member?(existing_media_ids, media_item.media_id),
+          do: media_item
+
+    {media_items, created_media_items}
+  end
+
   defp create_media_item_or_changeset(source, media_attrs) do
     case Media.create_media_item_from_backend_attrs(source, media_attrs) do
       {:ok, media_item} -> media_item
@@ -234,18 +293,51 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
     end
   end
 
-  defp create_media_item_and_enqueue_download(source, media_attrs) do
+  # This runs in the file follower, which is linked to the indexing job, so raising here (eg: if the
+  # database is busy) would kill the whole index. Indexing creates any media item that's missed here
+  # once yt-dlp is done so the error is just logged.
+  defp create_media_item_and_enqueue_download(source, media_attrs, caller) do
+    media_struct = YtDlpMedia.response_to_struct(media_attrs)
     # Reload because the source may have been updated during the (long-running) indexing process
     # and important settings like `download_media` may have changed.
     source = Repo.reload!(source)
+    # Something else (eg: a fast index) may have created it already, in which case it isn't new
+    is_new = not media_item_exists?(source, media_struct.media_id)
 
-    case Media.create_media_item_from_backend_attrs(source, media_attrs) do
+    case Media.create_media_item_from_backend_attrs(source, media_struct) do
       {:ok, %MediaItem{} = media_item} ->
+        if is_new, do: send(caller, {:followed_media_item_created, media_item})
+
         DownloadingHelpers.kickoff_download_if_pending(media_item)
 
       {:error, changeset} ->
         changeset
     end
+  rescue
+    error ->
+      media_id = if is_map(media_attrs), do: media_attrs["id"]
+
+      Logger.warning(
+        "FileFollowerServer Handler: Couldn't create media item #{inspect(media_id)} for source #{source.id}. " <>
+          "Leaving it to the end of indexing: #{Exception.message(error)}"
+      )
+
+      {:error, error}
+  end
+
+  defp media_item_exists?(_source, nil), do: false
+
+  defp media_item_exists?(source, media_id) do
+    MediaQuery.new()
+    |> where(^dynamic([mi], ^MediaQuery.for_source(source) and mi.media_id == ^media_id))
+    |> Repo.exists?()
+  end
+
+  defp list_media_ids(source) do
+    MediaQuery.new()
+    |> where(^MediaQuery.for_source(source))
+    |> select([mi], mi.media_id)
+    |> Repo.all()
   end
 
   # Find the difference between the current time and the last time the source was indexed
@@ -274,8 +366,17 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
       |> Enum.map_join("\n", fn media_item -> "youtube #{media_item.media_id}" end)
 
     case File.write(tmpfile, archive_contents) do
-      :ok -> tmpfile
-      err -> err
+      :ok ->
+        {:ok, tmpfile}
+
+      {:error, reason} ->
+        File.rm(tmpfile)
+
+        Logger.warning(
+          "Couldn't write a download archive for source #{source.id}, indexing without one: #{inspect(reason)}"
+        )
+
+        {:error, reason}
     end
   end
 
@@ -306,9 +407,11 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
   defp build_download_archive_options(%Source{last_indexed_at: nil}, _was_forced), do: []
   defp build_download_archive_options(_source, true), do: []
 
+  # Without an archive, yt-dlp indexes everything rather than stopping at media it's seen before
   defp build_download_archive_options(source, _was_forced) do
-    archive_file = create_download_archive_file(source)
-
-    [:break_on_existing, download_archive: archive_file]
+    case create_download_archive_file(source) do
+      {:ok, archive_file} -> [:break_on_existing, download_archive: archive_file]
+      {:error, _reason} -> []
+    end
   end
 end

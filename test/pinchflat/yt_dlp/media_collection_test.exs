@@ -59,6 +59,23 @@ defmodule Pinchflat.YtDlp.MediaCollectionTest do
       assert {:ok, _} = MediaCollection.get_media_attributes_for_collection(@channel_url)
     end
 
+    test "has yt-dlp write to the output filepath it's given" do
+      output_filepath = Path.join(Application.get_env(:pinchflat, :tmpfile_directory), "given_output.json")
+      current_self = self()
+
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        assert {:output_filepath, output_filepath} in addl_opts
+
+        {:ok, ""}
+      end)
+
+      handler = fn filename -> send(current_self, {:handler, filename}) end
+      addl_opts = [output_filepath: output_filepath, file_listener_handler: handler]
+
+      assert {:ok, _} = MediaCollection.get_media_attributes_for_collection(@channel_url, [], addl_opts)
+      assert_receive {:handler, ^output_filepath}
+    end
+
     test "supports an optional file_listener_handler that gets passed a filename" do
       expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
         {:ok, ""}

@@ -156,13 +156,22 @@ defmodule PinchflatWeb.Sources.SourceController do
     )
   end
 
+  # A disabled source isn't indexed (see `MediaCollectionIndexingWorker`) so don't say it's been enqueued
   def force_index(conn, %{"source_id" => id}) do
-    wrap_forced_action(
-      conn,
-      id,
-      "Index enqueued.",
-      &SlowIndexingHelpers.kickoff_indexing_task(&1, %{force: true})
-    )
+    case Sources.get_source!(id) do
+      %Source{enabled: true} = source ->
+        wrap_forced_action(
+          conn,
+          source,
+          "Index enqueued.",
+          &SlowIndexingHelpers.kickoff_indexing_task(&1, %{force: true})
+        )
+
+      source ->
+        conn
+        |> put_flash(:error, "Enable this source to index it.")
+        |> redirect(to: ~p"/sources/#{source}")
+    end
   end
 
   def force_metadata_refresh(conn, %{"source_id" => id}) do
@@ -192,13 +201,16 @@ defmodule PinchflatWeb.Sources.SourceController do
     )
   end
 
-  defp wrap_forced_action(conn, source_id, message, fun) do
-    source = Sources.get_source!(source_id)
+  defp wrap_forced_action(conn, %Source{} = source, message, fun) do
     fun.(source)
 
     conn
     |> put_flash(:info, message)
     |> redirect(to: ~p"/sources/#{source}")
+  end
+
+  defp wrap_forced_action(conn, source_id, message, fun) do
+    wrap_forced_action(conn, Sources.get_source!(source_id), message, fun)
   end
 
   # Profiles marked for deletion are left out since moving a source onto one would get it deleted too

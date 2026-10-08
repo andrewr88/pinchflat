@@ -4,13 +4,15 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotificationsTest do
   import Pinchflat.MediaFixtures
   import Pinchflat.SourcesFixtures
 
+  alias Pinchflat.Media.MediaItem
   alias Pinchflat.Lifecycle.Notifications.SourceNotifications
 
   @apprise_servers ["server_1", "server_2"]
 
-  describe "wrap_new_media_notification/3" do
-    test "sends a notification when the pending count changes" do
+  describe "send_new_media_notification_for_media_items/3" do
+    test "counts the media items that are pending download" do
       source = source_fixture()
+      media_items = [media_item_fixture(%{source_id: source.id, media_filepath: nil})]
 
       expect(AppriseRunnerMock, :run, fn servers, opts ->
         assert servers == @apprise_servers
@@ -23,58 +25,97 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotificationsTest do
         {:ok, ""}
       end)
 
-      SourceNotifications.wrap_new_media_notification(@apprise_servers, source, fn ->
+      assert :ok =
+               SourceNotifications.send_new_media_notification_for_media_items(@apprise_servers, source, media_items)
+    end
+
+    test "counts the media items that are downloaded" do
+      source = source_fixture()
+
+      media_items = [
+        media_item_fixture(%{source_id: source.id, media_filepath: "file.mp4"}),
         media_item_fixture(%{source_id: source.id, media_filepath: nil})
-      end)
-    end
+      ]
 
-    test "sends a notification when the downloaded count changes" do
-      source = source_fixture()
-
-      expect(AppriseRunnerMock, :run, fn servers, opts ->
-        assert servers == @apprise_servers
-
-        assert opts == [
-                 title: "[Pinchflat] New media found",
-                 body: "Found 1 new media item(s) for #{source.custom_name}. Downloading them now"
-               ]
+      expect(AppriseRunnerMock, :run, fn _servers, opts ->
+        assert Keyword.get(opts, :body) =~ "Found 2 new media item(s)"
 
         {:ok, ""}
       end)
 
-      SourceNotifications.wrap_new_media_notification(@apprise_servers, source, fn ->
-        media_item_fixture(%{source_id: source.id, media_filepath: "file.mp4"})
-      end)
+      SourceNotifications.send_new_media_notification_for_media_items(@apprise_servers, source, media_items)
     end
 
-    test "does not send a notification when the count does not change" do
+    test "doesn't count media items that won't be downloaded" do
       source = source_fixture()
+
+      media_items = [
+        media_item_fixture(%{source_id: source.id, media_filepath: nil}),
+        media_item_fixture(%{source_id: source.id, prevent_download: true, media_filepath: nil})
+      ]
+
+      expect(AppriseRunnerMock, :run, fn _servers, opts ->
+        assert Keyword.get(opts, :body) =~ "Found 1 new media item(s)"
+
+        {:ok, ""}
+      end)
+
+      SourceNotifications.send_new_media_notification_for_media_items(@apprise_servers, source, media_items)
+    end
+
+    test "only counts the given media items" do
+      source = source_fixture()
+      media_items = [media_item_fixture(%{source_id: source.id, media_filepath: nil})]
+      media_item_fixture(%{source_id: source.id, media_filepath: nil})
+
+      expect(AppriseRunnerMock, :run, fn _servers, opts ->
+        assert Keyword.get(opts, :body) =~ "Found 1 new media item(s)"
+
+        {:ok, ""}
+      end)
+
+      SourceNotifications.send_new_media_notification_for_media_items(@apprise_servers, source, media_items)
+    end
+
+    test "counts lots of media items" do
+      source = source_fixture()
+      media_items = [media_item_fixture(%{source_id: source.id, media_filepath: nil})]
+      # There are too many to fit into a single database query. Only the media items that exist are counted
+      missing_media_items = Enum.map(1..50_000, &%MediaItem{id: -&1})
+
+      expect(AppriseRunnerMock, :run, fn _servers, opts ->
+        assert Keyword.get(opts, :body) =~ "Found 1 new media item(s)"
+
+        {:ok, ""}
+      end)
+
+      SourceNotifications.send_new_media_notification_for_media_items(
+        @apprise_servers,
+        source,
+        missing_media_items ++ media_items
+      )
+    end
+
+    test "does not send a notification without any media items to count" do
+      source = source_fixture()
+      media_item_fixture(%{source_id: source.id, media_filepath: nil})
 
       expect(AppriseRunnerMock, :run, 0, fn _, _ -> {:ok, ""} end)
 
-      SourceNotifications.wrap_new_media_notification(@apprise_servers, source, fn ->
-        media_item_fixture(%{source_id: source.id, prevent_download: true, media_filepath: nil})
-      end)
+      assert :ok = SourceNotifications.send_new_media_notification_for_media_items(@apprise_servers, source, [])
     end
 
     test "does not send a notification if the source is set to not download media" do
       source = source_fixture(%{download_media: false})
 
-      expect(AppriseRunnerMock, :run, 0, fn _, _ -> {:ok, ""} end)
-
-      SourceNotifications.wrap_new_media_notification(@apprise_servers, source, fn ->
-        media_item_fixture(%{source_id: source.id, media_filepath: nil})
+      media_items = [
+        media_item_fixture(%{source_id: source.id, media_filepath: nil}),
         media_item_fixture(%{source_id: source.id, media_filepath: "file.mp4"})
-      end)
-    end
+      ]
 
-    test "returns the value of the function" do
-      source = source_fixture()
       expect(AppriseRunnerMock, :run, 0, fn _, _ -> {:ok, ""} end)
 
-      retval = SourceNotifications.wrap_new_media_notification(@apprise_servers, source, fn -> "value" end)
-
-      assert retval == "value"
+      SourceNotifications.send_new_media_notification_for_media_items(@apprise_servers, source, media_items)
     end
   end
 

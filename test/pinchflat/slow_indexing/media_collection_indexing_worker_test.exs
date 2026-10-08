@@ -274,7 +274,7 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorkerTest do
       assert {:error, _} = perform_job(MediaCollectionIndexingWorker, %{id: source.id})
     end
 
-    test "doesn't retry a one-off index if yt-dlp wrote media before exiting with an error" do
+    test "returns an error so a one-off first index that yt-dlp wrote some media for gets retried" do
       stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
         File.write!(Keyword.fetch!(addl_opts, :output_filepath), source_attributes_return_fixture())
 
@@ -283,8 +283,38 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorkerTest do
 
       source = source_fixture(index_frequency_minutes: -1, last_indexed_at: nil)
 
-      assert :ok = perform_job(MediaCollectionIndexingWorker, %{id: source.id})
-      assert Repo.reload!(source).last_indexed_at
+      assert {:error, _} = perform_job(MediaCollectionIndexingWorker, %{id: source.id})
+      assert Repo.reload!(source).last_indexed_at == nil
+    end
+
+    test "doesn't retry a forced one-off index of an indexed source that yt-dlp wrote some media for" do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        File.write!(Keyword.fetch!(addl_opts, :output_filepath), source_attributes_return_fixture())
+
+        {:error, @ytdlp_error, 1}
+      end)
+
+      source = source_fixture(index_frequency_minutes: -1, last_indexed_at: now_minus(1, :days))
+
+      assert :ok = perform_job(MediaCollectionIndexingWorker, %{id: source.id, force: true})
+      assert DateTime.diff(DateTime.utc_now(), Repo.reload!(source).last_indexed_at) < 2
+    end
+  end
+
+  describe "perform/1 when the source is disabled" do
+    test "doesn't index, enqueue downloads, or reschedule even if forced" do
+      expect(YtDlpRunnerMock, :run, 0, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        {:ok, source_attributes_return_fixture()}
+      end)
+
+      source = source_fixture(enabled: false, index_frequency_minutes: 60, download_media: true, fast_index: true)
+      media_item_fixture(source_id: source.id, media_filepath: nil)
+
+      assert :ok = perform_job(MediaCollectionIndexingWorker, %{id: source.id, force: true})
+
+      refute_enqueued(worker: MediaDownloadWorker)
+      refute_enqueued(worker: MediaCollectionIndexingWorker)
+      refute_enqueued(worker: FastIndexingWorker)
     end
   end
 
@@ -306,6 +336,25 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorkerTest do
         assert "server_1" = servers
         assert is_binary(Keyword.get(opts, :title))
         assert is_binary(Keyword.get(opts, :body))
+
+        {:ok, ""}
+      end)
+
+      perform_job(MediaCollectionIndexingWorker, %{id: source.id})
+    end
+
+    test "only counts the media items this index created" do
+      source = source_fixture()
+
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        # A fast index running at the same time creates (and sends a notification for) one of them first
+        media_item_fixture(source_id: source.id, media_id: "video1", media_filepath: nil)
+
+        {:ok, source_attributes_return_fixture()}
+      end)
+
+      expect(AppriseRunnerMock, :run, fn _servers, opts ->
+        assert Keyword.get(opts, :body) =~ "Found 2 new media item(s)"
 
         {:ok, ""}
       end)

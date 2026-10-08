@@ -51,7 +51,9 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorker do
   def perform(%Oban.Job{args: %{"id" => source_id}}) do
     source = Sources.get_source!(source_id)
 
-    if source.fast_index do
+    # Disabling a source deletes its fast indexing jobs but one can still turn up (eg: if one was running
+    # at the time). Running it would also reschedule it, so the source would be indexed from then on
+    if source.enabled && source.fast_index do
       perform_indexing_and_send_notification(source)
       reschedule_indexing(source)
     else

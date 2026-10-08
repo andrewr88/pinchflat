@@ -49,6 +49,19 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
       assert worker.priority == 0
     end
 
+    test "creates media that another source already has and enqueues its download", %{source: source} do
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>video1</yt:videoId>"} end)
+      # The stubbed yt-dlp response is for video1 too
+      media_item_fixture(source_id: source_fixture().id, media_id: "video1")
+
+      assert [media_item] = FastIndexingHelpers.index_and_kickoff_downloads(source)
+
+      assert %MediaItem{source_id: source_id, media_id: "video1"} = media_item
+      assert source_id == source.id
+      assert [worker] = all_enqueued(worker: MediaDownloadWorker)
+      assert worker.args["id"] == media_item.id
+    end
+
     test "does not enqueue a new worker for the source's media IDs we already know about", %{source: source} do
       expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
       media_item_fixture(source_id: source.id, media_id: "test_1")
