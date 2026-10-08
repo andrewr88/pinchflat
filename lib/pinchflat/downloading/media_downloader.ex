@@ -69,6 +69,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
   #   - `:unsuitable_for_download` if the media item fails the precheck
   #   - `:unrecoverable` if there was an initial failure and the recovery attempt failed
   #   - `:download_failed` for all other yt-dlp-related downloading errors
+  #   - `:update_failed` if the media was downloaded (or recovered) but the media item couldn't be saved
   #   - `:unknown` for any other errors, including those not related to yt-dlp
   # - If we retry using cookies, all of the above return values apply. The cookie retry
   #   logic is handled transparently as far as the caller is concerned
@@ -122,8 +123,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
           by retrying without SponsorBlock options.
           """)
 
-          {:ok, updated_media_item} = update_media_item_from_parsed_json(media_with_preloads, parsed_json)
-          {:recovered, updated_media_item, error_message}
+          update_recovered_media_item(media_with_preloads, parsed_json, error_message)
 
         {:error, :unsuitable_for_download} ->
           Logger.warning("""
@@ -172,8 +172,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
       anyway
       """)
 
-      {:ok, updated_media_item} = update_media_item_from_parsed_json(media_with_preloads, parsed_json)
-      {:recovered, updated_media_item, error_message}
+      update_recovered_media_item(media_with_preloads, parsed_json, error_message)
     else
       err ->
         Logger.error("Unable to recover error for media item ##{media_with_preloads.id}: #{inspect(err)}")
@@ -182,6 +181,13 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     end
   end
 
+  defp update_recovered_media_item(media_with_preloads, parsed_json, error_message) do
+    with {:ok, updated_media_item} <- update_media_item_from_parsed_json(media_with_preloads, parsed_json) do
+      {:recovered, updated_media_item, error_message}
+    end
+  end
+
+  # Returns {:ok, %MediaItem{}} | {:error, :update_failed, String.t()}
   defp update_media_item_from_parsed_json(media_with_preloads, parsed_json) do
     parsed_attrs =
       parsed_json
@@ -189,18 +195,70 @@ defmodule Pinchflat.Downloading.MediaDownloader do
       |> Map.merge(%{
         media_downloaded_at: DateTime.utc_now(),
         culled_at: nil,
-        nfo_filepath: determine_nfo_filepath(media_with_preloads, parsed_json),
-        metadata: %{
-          # IDEA: might be worth kicking off a job for this since thumbnail fetching
-          # could fail and I want to handle that in isolation
-          metadata_filepath: MetadataFileHelpers.compress_and_store_metadata_for(media_with_preloads, parsed_json),
-          thumbnail_filepath: MetadataFileHelpers.download_and_store_thumbnail_for(media_with_preloads)
-        }
+        nfo_filepath: determine_nfo_filepath(media_with_preloads, parsed_json)
       })
+      |> Map.merge(build_metadata_attrs(media_with_preloads, parsed_json))
 
     # Don't forgor to use preloaded associations or updates to
     # associations won't work!
-    Media.update_media_item(media_with_preloads, parsed_attrs)
+    case Media.update_media_item(media_with_preloads, parsed_attrs) do
+      {:ok, updated_media_item} ->
+        {:ok, updated_media_item}
+
+      {:error, changeset} ->
+        message =
+          "Unable to save downloaded media item ##{media_with_preloads.id}: #{format_changeset_errors(changeset)}"
+
+        Logger.error(message)
+
+        {:error, :update_failed, message}
+    end
+  end
+
+  # A metadata record needs a thumbnail (the column is NOT NULL) but fetching one can fail on its own
+  # (eg: rate limiting). If it does, the record is left as-is so the download itself still gets saved.
+  #
+  # IDEA: might be worth kicking off a job for this since thumbnail fetching
+  # could fail and I want to handle that in isolation
+  defp build_metadata_attrs(media_with_preloads, parsed_json) do
+    metadata_filepath = MetadataFileHelpers.compress_and_store_metadata_for(media_with_preloads, parsed_json)
+
+    case MetadataFileHelpers.download_and_store_thumbnail_for(media_with_preloads) do
+      nil ->
+        Logger.warning(
+          "Couldn't download a thumbnail for media item ##{media_with_preloads.id}. Leaving its metadata record as-is"
+        )
+
+        %{}
+
+      thumbnail_filepath ->
+        %{metadata: %{metadata_filepath: metadata_filepath, thumbnail_filepath: thumbnail_filepath}}
+    end
+  end
+
+  # Turns a changeset's errors into a readable string, eg: "title has invalid format"
+  defp format_changeset_errors(changeset) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {message, opts} ->
+      Enum.reduce(opts, message, fn {key, value}, acc ->
+        String.replace(acc, "%{#{key}}", fn _ -> to_string(value) end)
+      end)
+    end)
+    |> flatten_errors(nil)
+    |> Enum.join(", ")
+  end
+
+  # Association errors are nested maps, so they're prefixed with the association's name
+  defp flatten_errors(errors, prefix) do
+    Enum.flat_map(errors, fn {field, field_errors} ->
+      path = if prefix, do: "#{prefix}.#{field}", else: "#{field}"
+
+      if is_map(field_errors) do
+        flatten_errors(field_errors, path)
+      else
+        Enum.map(field_errors, &"#{path} #{StringUtils.wrap_string(&1)}")
+      end
+    end)
   end
 
   defp determine_nfo_filepath(media_item, parsed_json) do

@@ -55,6 +55,21 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
       assert updated_media_item.metadata.thumbnail_filepath =~ "media_items/#{media_item.id}/thumbnail.jpg"
     end
 
+    test "saves the download even if the thumbnail can't be downloaded", %{media_item: media_item} do
+      expect(YtDlpRunnerMock, :run, 3, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download_thumbnail, _opts, _ot, _addl -> {:error, "HTTP Error 429: Too Many Requests", 1}
+        _url, :download, _opts, _ot, _addl -> {:ok, render_metadata(:media_metadata)}
+      end)
+
+      assert {:ok, _} = MediaDownloader.download_for_media_item(media_item)
+      media_item = Repo.reload!(media_item)
+
+      assert String.ends_with?(media_item.media_filepath, ".mkv")
+      assert DateTime.diff(DateTime.utc_now(), media_item.media_downloaded_at) < 2
+      assert media_item.last_error == nil
+    end
+
     test "errors for non-downloadable media are passed through", %{media_item: media_item} do
       expect(YtDlpRunnerMock, :run, fn _url, :get_downloadable_status, _opts, _ot, _addl ->
         {:ok, Phoenix.json_library().encode!(%{"live_status" => "is_live"})}
@@ -81,6 +96,21 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
 
       assert {:error, :unknown, message} = MediaDownloader.download_for_media_item(media_item)
       assert message == "Unknown error: {:error, :some_error}"
+    end
+
+    test "returns an error and sets last_error if the download can't be saved", %{media_item: media_item} do
+      expect(YtDlpRunnerMock, :run, 3, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download_thumbnail, _opts, _ot, _addl -> {:ok, ""}
+        _url, :download, _opts, _ot, _addl -> {:ok, render_metadata_with_invalid_title()}
+      end)
+
+      assert {:error, :update_failed, message} = MediaDownloader.download_for_media_item(media_item)
+      assert message =~ "title has invalid format"
+
+      media_item = Repo.reload!(media_item)
+      assert media_item.last_error == message
+      assert media_item.media_filepath == nil
     end
   end
 
@@ -298,6 +328,26 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
 
       assert media_item.last_error == "Unable to communicate with SponsorBlock"
     end
+
+    test "returns an error and sets last_error if the recovered media item can't be saved", %{media_item: media_item} do
+      expect(YtDlpRunnerMock, :run, 5, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, addl ->
+          [{:output_filepath, filepath} | _] = addl
+          File.write(filepath, render_metadata_with_invalid_title())
+
+          {:error, "Unable to communicate with SponsorBlock", 1}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+      end)
+
+      assert {:error, :update_failed, message} = MediaDownloader.download_for_media_item(media_item)
+      assert message =~ "title has invalid format"
+      assert Repo.reload(media_item).last_error == message
+    end
   end
 
   describe "download_for_media_item/3 when testing SponsorBlock retry" do
@@ -416,6 +466,29 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
       assert DateTime.diff(DateTime.utc_now(), updated_media_item.media_downloaded_at) < 2
       assert String.ends_with?(updated_media_item.media_filepath, ".mkv")
       assert updated_media_item.last_error == message
+    end
+
+    test "returns an error if the media item can't be saved after retrying without SponsorBlock", %{
+      media_item: media_item
+    } do
+      message = "Unable to communicate with SponsorBlock API: HTTP Error 503: Service Unavailable"
+
+      # Initial download attempt with SponsorBlock (fails)
+      expect(YtDlpRunnerMock, :run, 2, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download, _opts, _ot, _addl -> {:error, message, 1}
+      end)
+
+      # Retry without SponsorBlock downloads, but the result can't be saved
+      expect(YtDlpRunnerMock, :run, 3, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download, _opts, _ot, _addl -> {:ok, render_metadata_with_invalid_title()}
+        _url, :download_thumbnail, _opts, _ot, _addl -> {:ok, ""}
+      end)
+
+      assert {:error, :update_failed, update_message} = MediaDownloader.download_for_media_item(media_item)
+      assert update_message =~ "title has invalid format"
+      assert Repo.reload(media_item).last_error == update_message
     end
 
     test "falls back to parse recovery if retry without SponsorBlock also fails", %{media_item: media_item} do
@@ -743,5 +816,13 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
 
       assert updated_media_item.nfo_filepath == nil
     end
+  end
+
+  # A title like this is rejected by MediaItem's changeset (see issue #549), so saving it fails
+  defp render_metadata_with_invalid_title do
+    :media_metadata
+    |> render_parsed_metadata()
+    |> Map.put("title", "youtube video #123")
+    |> Phoenix.json_library().encode!()
   end
 end
