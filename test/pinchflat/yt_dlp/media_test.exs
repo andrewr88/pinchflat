@@ -58,13 +58,13 @@ defmodule Pinchflat.YtDlp.MediaTest do
     end
   end
 
-  describe "get_downloadable_status/1" do
+  describe "get_downloadable_status/3" do
     test "returns :downloadable if the media was never live" do
       expect(YtDlpRunnerMock, :run, fn _url, :get_downloadable_status, _opts, _ot, _addl ->
         {:ok, Phoenix.json_library().encode!(%{"live_status" => "not_live"})}
       end)
 
-      assert {:ok, :downloadable} = Media.get_downloadable_status(@media_url)
+      assert {:ok, :downloadable, nil} = Media.get_downloadable_status(@media_url)
     end
 
     test "returns :downloadable if the media was live and has been processed" do
@@ -72,7 +72,7 @@ defmodule Pinchflat.YtDlp.MediaTest do
         {:ok, Phoenix.json_library().encode!(%{"live_status" => "was_live"})}
       end)
 
-      assert {:ok, :downloadable} = Media.get_downloadable_status(@media_url)
+      assert {:ok, :downloadable, nil} = Media.get_downloadable_status(@media_url)
     end
 
     test "returns :downloadable if the media's live_status is nil" do
@@ -80,7 +80,7 @@ defmodule Pinchflat.YtDlp.MediaTest do
         {:ok, Phoenix.json_library().encode!(%{"live_status" => nil})}
       end)
 
-      assert {:ok, :downloadable} = Media.get_downloadable_status(@media_url)
+      assert {:ok, :downloadable, nil} = Media.get_downloadable_status(@media_url)
     end
 
     test "returns :ignorable if the media is currently live" do
@@ -88,7 +88,7 @@ defmodule Pinchflat.YtDlp.MediaTest do
         {:ok, Phoenix.json_library().encode!(%{"live_status" => "is_live"})}
       end)
 
-      assert {:ok, :ignorable} = Media.get_downloadable_status(@media_url)
+      assert {:ok, :ignorable, nil} = Media.get_downloadable_status(@media_url)
     end
 
     test "returns :ignorable if the media is scheduled to be live" do
@@ -96,7 +96,7 @@ defmodule Pinchflat.YtDlp.MediaTest do
         {:ok, Phoenix.json_library().encode!(%{"live_status" => "is_upcoming"})}
       end)
 
-      assert {:ok, :ignorable} = Media.get_downloadable_status(@media_url)
+      assert {:ok, :ignorable, nil} = Media.get_downloadable_status(@media_url)
     end
 
     test "returns :ignorable if the media was live but hasn't been processed" do
@@ -104,7 +104,7 @@ defmodule Pinchflat.YtDlp.MediaTest do
         {:ok, Phoenix.json_library().encode!(%{"live_status" => "post_live"})}
       end)
 
-      assert {:ok, :ignorable} = Media.get_downloadable_status(@media_url)
+      assert {:ok, :ignorable, nil} = Media.get_downloadable_status(@media_url)
     end
 
     test "returns an error if the downloadable status can't be determined" do
@@ -122,7 +122,20 @@ defmodule Pinchflat.YtDlp.MediaTest do
         {:ok, Phoenix.json_library().encode!(%{"live_status" => "not_live"})}
       end)
 
-      assert {:ok, :downloadable} = Media.get_downloadable_status(@media_url, addl_arg: true)
+      assert {:ok, :downloadable, nil} = Media.get_downloadable_status(@media_url, [], addl_arg: true)
+    end
+
+    # Eg: to check where the media would be downloaded to before downloading it
+    test "returns the filepath yt-dlp gives the media with the given command options" do
+      expect(YtDlpRunnerMock, :run, fn _url, :get_downloadable_status, opts, ot, _addl ->
+        assert opts == [:simulate, :skip_download, output: "/media/%(title)S.%(ext)S"]
+        assert ot == "%(.{live_status,filename})j"
+
+        {:ok, Phoenix.json_library().encode!(%{"live_status" => "not_live", "filename" => "/media/Title.mp4"})}
+      end)
+
+      assert {:ok, :downloadable, "/media/Title.mp4"} =
+               Media.get_downloadable_status(@media_url, output: "/media/%(title)S.%(ext)S")
     end
   end
 

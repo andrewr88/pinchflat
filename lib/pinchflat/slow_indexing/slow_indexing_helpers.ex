@@ -26,6 +26,8 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
 
   # yt-dlp's output can be very long (eg: one error per media item) so only log the start of it
   @logged_output_limit 500
+  # How many first indexes in a row can be incomplete before the source is marked as indexed anyway
+  @max_incomplete_first_indexes 3
 
   @doc """
   Kills old indexing tasks and starts a new task to index the media collection.
@@ -102,6 +104,13 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
   otherwise use a download archive of the media found here, stopping before it got to anything
   older, so it'd never be indexed. This way, the next index is a full one again.
 
+  A source with media yt-dlp can never get (eg: a video that's permanently unavailable) would never
+  finish its first index though, making every index a slow, full one. So once #{@max_incomplete_first_indexes}
+  first indexes in a row are incomplete (counted by the source's `incomplete_first_index_count`), the
+  source is marked as indexed anyway, logging a warning, and the media items are returned. An index
+  that's complete marks the source as indexed and starts the count again, while one that fails without
+  writing any media doesn't count.
+
   Available options:
     - `was_forced`: Whether the indexing was forced by the user
     - `on_new_media_items`: A function that's called with the media items this index created
@@ -137,23 +146,39 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
 
   defp handle_indexing_result(source, {:ok, media_attributes}) do
     {media_items, created_media_items} = create_media_items(source, media_attributes)
-    Sources.update_source(source, %{last_indexed_at: DateTime.utc_now()})
+    mark_as_indexed(source)
 
     {media_items, created_media_items}
   end
 
-  # See the docs above for why a source's first index isn't marked as indexed here
+  # See the docs above for why a source's first index usually isn't marked as indexed here
   defp handle_indexing_result(source, {:partial, media_attributes}) do
     {media_items, created_media_items} = create_media_items(source, media_attributes)
+    incomplete_first_index_count = source.incomplete_first_index_count + 1
 
-    if source.last_indexed_at do
-      Sources.update_source(source, %{last_indexed_at: DateTime.utc_now()})
+    cond do
+      source.last_indexed_at ->
+        mark_as_indexed(source)
 
-      {media_items, created_media_items}
-    else
-      Logger.warning("Not marking source #{source.id} as indexed since yt-dlp didn't finish its first index")
+        {media_items, created_media_items}
 
-      {{:error, :indexing_incomplete}, created_media_items}
+      incomplete_first_index_count >= @max_incomplete_first_indexes ->
+        Logger.warning(
+          "Marking source #{source.id} #{inspect(source.custom_name)} as indexed even though yt-dlp didn't finish " <>
+            "its first index #{incomplete_first_index_count} times in a row (eg: it has media yt-dlp can't get). " <>
+            "From now on, its indexes only look for new media unless they're forced, so older media that yt-dlp " <>
+            "didn't get to may be missing"
+        )
+
+        mark_as_indexed(source)
+
+        {media_items, created_media_items}
+
+      true ->
+        Logger.warning("Not marking source #{source.id} as indexed since yt-dlp didn't finish its first index")
+        Sources.update_source(source, %{incomplete_first_index_count: incomplete_first_index_count})
+
+        {{:error, :indexing_incomplete}, created_media_items}
     end
   end
 
@@ -161,6 +186,10 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
     Logger.error("Failed to index source #{source.id}: #{inspect(error, printable_limit: @logged_output_limit)}")
 
     {{:error, :indexing_failed}, []}
+  end
+
+  defp mark_as_indexed(source) do
+    Sources.update_source(source, %{last_indexed_at: DateTime.utc_now(), incomplete_first_index_count: 0})
   end
 
   # The file follower is a GenServer that watches a file for new lines and

@@ -549,6 +549,29 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilderTest do
       end
     end
 
+    # yt-dlp expands environment variables in the output template's text (eg: a channel named "$HOME"
+    # would be the home directory). An empty field after the `$` keeps it from naming one
+    test "keeps a $ in source names from expanding an environment variable", %{media_item: media_item} do
+      template = "/{{ source_custom_name }}/{{ source_collection_name }}/{{ title }}.{{ ext }}"
+      media_item = update_media_profile_attribute(media_item, %{output_path_template: template})
+
+      cases = [
+        {"$HOME", "$%(id).0sHOME"},
+        {"Ke$ha", "Ke$%(id).0sha"},
+        {"${X}", "$%(id).0s{X}"},
+        {"100% $$", "100%% $%(id).0s$%(id).0s"},
+        {"No dollar signs", "No dollar signs"}
+      ]
+
+      for {name, expected_segment} <- cases do
+        source = %{media_item.source | custom_name: name, collection_name: name}
+
+        path = DownloadOptionBuilder.build_output_path_for(%{media_item | source: source})
+
+        assert path == "/tmp/test/media/#{expected_segment}/#{expected_segment}/%(title)S.%(ext)S"
+      end
+    end
+
     test "raises if the path would be outside the media directory", %{media_item: media_item} do
       cases = [
         {"/../{{ title }}.{{ ext }}", :raises},

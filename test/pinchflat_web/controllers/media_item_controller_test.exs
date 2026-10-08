@@ -2,8 +2,11 @@ defmodule PinchflatWeb.MediaItemControllerTest do
   use PinchflatWeb.ConnCase
 
   import Pinchflat.MediaFixtures
+  import Pinchflat.SourcesFixtures
+  import Pinchflat.ProfilesFixtures
 
   alias Pinchflat.Repo
+  alias Pinchflat.Profiles
   alias Pinchflat.Media.MediaItem
   alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Downloading.MediaDownloadWorker
@@ -229,6 +232,25 @@ defmodule PinchflatWeb.MediaItemControllerTest do
       media_item = media_item_fixture()
 
       assert_error_sent 404, fn -> post(conn, ~p"/sources/#{media_item.source_id}/media/0/force_download") end
+      assert [] = all_enqueued(worker: MediaDownloadWorker)
+    end
+
+    # Its media is deleted along with it, so there's no point downloading it
+    test "returns 404 if the media item's source is being deleted", %{conn: conn} do
+      source = source_fixture(marked_for_deletion_at: now())
+      media_item = media_item_fixture(source_id: source.id, media_filepath: nil)
+
+      assert_error_sent 404, fn -> post(conn, ~p"/sources/#{source.id}/media/#{media_item.id}/force_download") end
+      assert [] = all_enqueued(worker: MediaDownloadWorker)
+    end
+
+    test "returns 404 if the media item's media profile is being deleted", %{conn: conn} do
+      media_profile = media_profile_fixture()
+      source = source_fixture(media_profile_id: media_profile.id)
+      media_item = media_item_fixture(source_id: source.id, media_filepath: nil)
+      {:ok, _} = Profiles.update_media_profile(media_profile, %{marked_for_deletion_at: now()})
+
+      assert_error_sent 404, fn -> post(conn, ~p"/sources/#{source.id}/media/#{media_item.id}/force_download") end
       assert [] = all_enqueued(worker: MediaDownloadWorker)
     end
   end

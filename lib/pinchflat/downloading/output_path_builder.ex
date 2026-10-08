@@ -15,7 +15,8 @@ defmodule Pinchflat.Downloading.OutputPathBuilder do
   literally instead of being expanded or breaking the parse.
 
   Translates liquid-style templates into yt-dlp-style templates,
-  leaving yt-dlp syntax intact.
+  leaving yt-dlp syntax intact. Each `$` in the template's text is escaped so yt-dlp
+  doesn't expand it as an environment variable (see `escape_dollar_signs/1`).
   """
   def build(template_string, additional_template_options \\ %{}) do
     custom_options = custom_yt_dlp_option_map()
@@ -30,7 +31,34 @@ defmodule Pinchflat.Downloading.OutputPathBuilder do
 
     template_options = Map.merge(expanded_custom_options, additional_template_options)
 
-    TemplateParser.parse(template_string, template_options, &identifier_fn/2)
+    template_string
+    |> escape_dollar_signs_in_text()
+    |> TemplateParser.parse(template_options, &identifier_fn/2)
+  end
+
+  @doc """
+  Escapes each `$` in text that's put in a yt-dlp output template so yt-dlp writes it as-is.
+
+  yt-dlp expands environment variables in an output template's text before filling in its
+  fields (whose values aren't expanded). Eg: `$HOME` and `${HOME}` become the home directory
+  and `Ke$ha` uses the variable `ha` if it's set. yt-dlp has no escape for that (`$$` isn't one),
+  so an empty field goes after each `$`, keeping it from starting a variable's name without
+  changing the path. The field is the media's ID cut down to nothing: yt-dlp requires every
+  media to have one (a missing field would be written as "NA").
+
+  Returns binary()
+  """
+  def escape_dollar_signs(text) do
+    String.replace(text, "$", "$%(id).0s")
+  end
+
+  # yt-dlp's own syntax is left as-is: fields, since a field can't contain another (eg: the `$` in
+  # `%(uploader|$)s` isn't escaped), and `%%`, which is a `%` in the text (eg: in `%%(a$b)s` it is)
+  defp escape_dollar_signs_in_text(template_string) do
+    Regex.replace(~r/%%|%\([^)]*\)|\$/, template_string, fn
+      "$" -> escape_dollar_signs("$")
+      yt_dlp_syntax -> yt_dlp_syntax
+    end)
   end
 
   # The `nil` case simply wraps the identifier in yt-dlp-style syntax. This assumes that

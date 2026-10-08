@@ -231,6 +231,9 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
   #   - a name that's just `.` or `..` would be a relative path segment, so its dots become `_`
   #   - `%` is doubled so yt-dlp writes it as-is instead of expanding e.g. `%(id)s` as a field
   #     (yt-dlp already wrote a lone `%` as-is, so a name like "100% Real" keeps its path)
+  #   - `$` is escaped so yt-dlp writes it as-is instead of expanding e.g. `$HOME` as an environment
+  #     variable (see `OutputPathBuilder.escape_dollar_signs/1`). Only a name with a `$` followed by
+  #     the name of a variable that's set changes its path
   defp escape_source_name(name) when name in [".", ".."] do
     String.replace(name, ".", "_")
   end
@@ -239,7 +242,9 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
     name
     |> String.replace("/", "⧸")
     |> String.replace("\\", "⧹")
+    # Before `$` is escaped, which adds a field
     |> String.replace("%", "%%")
+    |> OutputPathBuilder.escape_dollar_signs()
   end
 
   # The final path must be inside the media directory, however the template and the names in

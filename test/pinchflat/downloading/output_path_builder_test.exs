@@ -47,5 +47,27 @@ defmodule Pinchflat.Downloading.OutputPathBuilderTest do
 
       assert res == "/Best {{ of/{{ title }}.%(ext)S"
     end
+
+    # yt-dlp expands environment variables in the template's text (not in field values) before filling it
+    # in. An empty field after the `$` keeps it from naming one
+    test "keeps a $ in the template's text from expanding an environment variable" do
+      cases = [
+        {"/$HOME/{{ title }}.{{ ext }}", "/$%(id).0sHOME/%(title)S.%(ext)S"},
+        {"/Ke$ha/${X}/%(title)s.%(ext)s", "/Ke$%(id).0sha/$%(id).0s{X}/%(title)s.%(ext)s"},
+        {"/100%%$HOME.{{ ext }}", "/100%%$%(id).0sHOME.%(ext)S"},
+        {"/No dollar signs/{{ title }}.{{ ext }}", "/No dollar signs/%(title)S.%(ext)S"}
+      ]
+
+      for {template, expected} <- cases do
+        assert OutputPathBuilder.build(template) == {:ok, expected}
+      end
+    end
+
+    # A field can't have another field inside it
+    test "leaves a $ inside a yt-dlp field as it is" do
+      template = "/%(uploader|$HOME)s/%%(not a field $X)s.{{ ext }}"
+
+      assert OutputPathBuilder.build(template) == {:ok, "/%(uploader|$HOME)s/%%(not a field $%(id).0sX)s.%(ext)S"}
+    end
   end
 end

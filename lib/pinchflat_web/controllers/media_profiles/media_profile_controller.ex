@@ -91,7 +91,7 @@ defmodule PinchflatWeb.MediaProfiles.MediaProfileController do
   end
 
   def show(conn, %{"id" => id}) do
-    media_profile = Profiles.get_media_profile!(id)
+    media_profile = Profiles.get_media_profile_not_being_deleted!(id)
 
     # Sources that are being deleted are hidden, like on the sources page
     sources =
@@ -105,14 +105,14 @@ defmodule PinchflatWeb.MediaProfiles.MediaProfileController do
   end
 
   def edit(conn, %{"id" => id}) do
-    media_profile = Profiles.get_media_profile!(id)
+    media_profile = Profiles.get_media_profile_not_being_deleted!(id)
     changeset = Profiles.change_media_profile(media_profile)
 
     render(conn, :edit, media_profile: media_profile, changeset: changeset)
   end
 
   def update(conn, %{"id" => id, "media_profile" => media_profile_params}) do
-    media_profile = Profiles.get_media_profile!(id)
+    media_profile = Profiles.get_media_profile_not_being_deleted!(id)
 
     case Profiles.update_media_profile(media_profile, Map.take(media_profile_params, @form_fields)) do
       {:ok, media_profile} ->
@@ -125,6 +125,8 @@ defmodule PinchflatWeb.MediaProfiles.MediaProfileController do
     end
   end
 
+  # Unlike the other actions, this works for a profile that's already being deleted, eg: to retry a
+  # deletion that failed. The same deletion isn't queued again while it's still queued or running
   def delete(conn, %{"id" => id} = params) do
     # This awkward comparison converts the string to a boolean
     delete_files = Map.get(params, "delete_files", "") == "true"

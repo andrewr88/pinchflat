@@ -54,17 +54,24 @@ defmodule Pinchflat.YtDlp.Media do
   Determines if the media at the given URL is ready to be downloaded.
   Common examples of non-downloadable media are upcoming or in-progress live streams.
 
-  Returns {:ok, :downloadable | :ignorable} | {:error, any}
-  """
-  def get_downloadable_status(url, addl_opts \\ []) do
-    action = :get_downloadable_status
-    command_opts = [:simulate, :skip_download]
+  Also returns the filepath yt-dlp gives the media (nil if it doesn't give one), eg: with
+  the `output` template it's downloaded with, so that can be checked before downloading it.
+  Optionally takes a list of additional command options to pass to yt-dlp or
+  configuration-related options to pass to the runner.
 
-    case backend_runner().run(url, action, command_opts, "%(.{live_status})j", addl_opts) do
+  Returns {:ok, :downloadable | :ignorable, binary() | nil} | {:error, any}
+  """
+  def get_downloadable_status(url, command_opts \\ [], addl_opts \\ []) do
+    action = :get_downloadable_status
+    all_command_opts = [:simulate, :skip_download] ++ command_opts
+
+    case backend_runner().run(url, action, all_command_opts, "%(.{live_status,filename})j", addl_opts) do
       {:ok, output} ->
-        output
-        |> Phoenix.json_library().decode!()
-        |> parse_downloadable_status()
+        response = Phoenix.json_library().decode!(output)
+
+        with {:ok, status} <- parse_downloadable_status(response) do
+          {:ok, status, response["filename"]}
+        end
 
       err ->
         err

@@ -5,6 +5,7 @@ defmodule PinchflatWeb.MediaItems.MediaItemController do
 
   alias Pinchflat.Repo
   alias Pinchflat.Media
+  alias Pinchflat.Sources
   alias Pinchflat.Media.MediaItem
   alias Pinchflat.Utils.MimeUtils
   alias Pinchflat.Downloading.MediaDownloadWorker
@@ -55,6 +56,8 @@ defmodule PinchflatWeb.MediaItems.MediaItemController do
 
   def force_download(conn, %{"media_item_id" => id}) do
     media_item = Media.get_media_item!(id)
+    # 404s if the source is being deleted, since its media is deleted along with it
+    Sources.get_source_not_being_deleted!(media_item.source_id)
 
     :ok =
       case MediaDownloadWorker.kickoff_with_task(media_item, %{force: true}) do

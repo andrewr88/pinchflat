@@ -8,6 +8,7 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
   alias Pinchflat.Media
   alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Downloading.MediaDownloader
+  alias Pinchflat.Downloading.DownloadOptionBuilder
 
   setup do
     media_item =
@@ -148,6 +149,43 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
 
       assert {:error, :unknown, "Unknown error: {:error, :what_tha}"} =
                MediaDownloader.download_for_media_item(media_item)
+    end
+  end
+
+  # The output template is inside the media directory, but yt-dlp fills in its fields from the media's
+  # metadata. It writes a field that's a whole folder of the template as-is, even if it's ".."
+  describe "download_for_media_item/3 when testing where yt-dlp would download the media" do
+    test "works it out with the download's output template before downloading", %{media_item: media_item} do
+      output_template = DownloadOptionBuilder.build_output_path_for(media_item)
+      filepath = Path.join(Application.get_env(:pinchflat, :media_directory), "Something.mp4")
+
+      expect(YtDlpRunnerMock, :run, 3, fn
+        _url, :get_downloadable_status, opts, _ot, _addl ->
+          assert opts[:output] == output_template
+
+          {:ok, Phoenix.json_library().encode!(%{"live_status" => "not_live", "filename" => filepath})}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+
+        _url, :download, _opts, _ot, _addl ->
+          {:ok, render_metadata(:media_metadata)}
+      end)
+
+      assert {:ok, _} = MediaDownloader.download_for_media_item(media_item)
+    end
+
+    test "doesn't download the media if it would be outside the media directory", %{media_item: media_item} do
+      filepath = Path.join(Application.get_env(:pinchflat, :media_directory), "../Something.mp4")
+
+      # Only once, so downloading would fail the test
+      expect(YtDlpRunnerMock, :run, fn _url, :get_downloadable_status, _opts, _ot, _addl ->
+        {:ok, Phoenix.json_library().encode!(%{"live_status" => "not_live", "filename" => filepath})}
+      end)
+
+      assert {:error, :download_failed, message} = MediaDownloader.download_for_media_item(media_item)
+      assert message =~ "#{inspect(filepath)}, outside the media directory"
+      assert Repo.reload!(media_item).last_error == message
     end
   end
 

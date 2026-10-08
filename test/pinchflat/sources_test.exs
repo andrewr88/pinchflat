@@ -1660,6 +1660,27 @@ defmodule Pinchflat.SourcesTest do
       refute File.exists?(media_item.media_filepath)
     end
 
+    # yt-dlp fills in the template's fields from the media's metadata. It writes a field that's a whole
+    # folder of the template as-is, even if it's ".."
+    test "keeps the paths of a media item whose new path would be outside the media directory" do
+      %{source: source, media_item: media_item, new_dir: new_dir} = source_with_files_to_move()
+      media_directory = Application.get_env(:pinchflat, :media_directory)
+      outside_dir = Path.join(media_directory, "../outside #{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(outside_dir) end)
+
+      expect_series_directory_lookup(new_dir)
+
+      expect(YtDlpRunnerMock, :run, fn "--load-info-json=" <> _, :get_output_filepath, _opts, _ot, _addl ->
+        {:ok, Path.join(outside_dir, "s2025e122000 - Episode.mp4")}
+      end)
+
+      assert {:ok, _} = Sources.update_source_directory(source)
+
+      assert Repo.reload!(media_item).media_filepath == media_item.media_filepath
+      assert File.read!(media_item.media_filepath) == "contents of #{media_item.media_filepath}"
+      refute File.exists?(outside_dir)
+    end
+
     test "renames subtitles to follow the media file and leaves ones with no path alone" do
       %{source: source, media_item: media_item, old_dir: old_dir, new_dir: new_dir} = source_with_files_to_move()
 

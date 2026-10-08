@@ -75,6 +75,22 @@ defmodule Pinchflat.Sources do
   def get_source!(id), do: Repo.get!(Source, id)
 
   @doc """
+  Gets a single source that isn't being deleted: neither it nor its media profile (whose
+  deletion deletes it too) is marked for deletion. Those are hidden everywhere else, so a
+  source that's being deleted is treated like one that's already gone.
+
+  Returns %Source{}. Raises `Ecto.NoResultsError` if the Source does not exist or is being deleted.
+  """
+  def get_source_not_being_deleted!(id) do
+    query =
+      from s in Source,
+        inner_join: mp in assoc(s, :media_profile),
+        where: is_nil(s.marked_for_deletion_at) and is_nil(mp.marked_for_deletion_at)
+
+    Repo.get!(query, id)
+  end
+
+  @doc """
   Creates a source. May attempt to pull additional source details from the
   original_url (if provided). Will attempt to start indexing the source's
   media if successfully inserted and enabled.
@@ -210,8 +226,9 @@ defmodule Pinchflat.Sources do
      stored info JSON, keeping the extension of the current media file. The subtitle,
      thumbnail, NFO, `.info.json` and predicted media paths follow the new media path (the
      stored info JSON, in the internal metadata directory, doesn't move). An item whose
-     new path can't be worked out (no stored info JSON, or yt-dlp fails) keeps its
-     current paths. This is logged and the other files are still moved.
+     new path can't be worked out (no stored info JSON, or yt-dlp fails) or would be
+     outside the media directory keeps its current paths. This is logged and the other
+     files are still moved.
      Filename options in the user's yt-dlp config files (e.g. `--trim-filenames`, `-P`) aren't applied to the new paths
   4. Move each file by copying it, verifying the copy, then deleting the original.
      Files move whatever the media profile's download options are now: they may have
@@ -429,7 +446,9 @@ defmodule Pinchflat.Sources do
   # worked out offline from the item's stored info JSON. The extension of the current media
   # file is kept, since the info JSON's can differ from it (e.g. after a merge or remux).
   #
-  # Returns binary() | nil. nil (logged) when there's no stored info JSON or yt-dlp fails
+  # Returns binary() | nil. nil (logged) when there's no stored info JSON, yt-dlp fails, or the filename is
+  # outside the media directory: yt-dlp fills in the template's fields from the media's metadata and writes
+  # a field that's a whole folder of the template as-is, even if it's ".."
   defp rebuild_media_filepath(media_item) do
     output_template = DownloadOptionBuilder.build_output_path_for(media_item)
     # Passed like in a real download: they decide the format, which the filename can depend on
@@ -437,7 +456,8 @@ defmodule Pinchflat.Sources do
 
     with {:ok, info_json} <- read_stored_info_json(media_item),
          {:ok, filepath} <-
-           YtDlpMedia.get_output_filepath(info_json, output_template, quality_options, skip_sleep_interval: true) do
+           YtDlpMedia.get_output_filepath(info_json, output_template, quality_options, skip_sleep_interval: true),
+         :ok <- ensure_inside_media_directory(filepath) do
       Path.rootname(filepath) <> Path.extname(media_item.media_filepath)
     else
       error ->
@@ -462,6 +482,14 @@ defmodule Pinchflat.Sources do
   end
 
   defp read_stored_info_json(_media_item), do: {:error, "no stored info JSON"}
+
+  defp ensure_inside_media_directory(filepath) do
+    if FilesystemUtils.inside_directory?(filepath, Application.get_env(:pinchflat, :media_directory)) do
+      :ok
+    else
+      {:error, "#{inspect(filepath)} is outside the media directory"}
+    end
+  end
 
   defp build_new_media_item_paths(media_item, new_media_filepath) do
     updates = %{media_filepath: new_media_filepath}

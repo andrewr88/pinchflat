@@ -26,6 +26,18 @@ defmodule Pinchflat.Profiles do
   def get_media_profile!(id), do: Repo.get!(MediaProfile, id)
 
   @doc """
+  Gets a single media_profile that isn't being deleted (ie: marked for deletion). Those are
+  hidden everywhere else, so a profile that's being deleted is treated like one that's already gone.
+
+  Returns %MediaProfile{}. Raises `Ecto.NoResultsError` if the Media profile does not exist or is being deleted.
+  """
+  def get_media_profile_not_being_deleted!(id) do
+    MediaProfile
+    |> where([mp], is_nil(mp.marked_for_deletion_at))
+    |> Repo.get!(id)
+  end
+
+  @doc """
   Creates a media_profile.
 
   Returns {:ok, %MediaProfile{}} | {:error, %Ecto.Changeset{}}

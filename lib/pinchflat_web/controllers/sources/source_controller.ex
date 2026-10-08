@@ -86,7 +86,7 @@ defmodule PinchflatWeb.Sources.SourceController do
   end
 
   def show(conn, %{"id" => id}) do
-    source = Repo.preload(Sources.get_source!(id), :media_profile)
+    source = Repo.preload(Sources.get_source_not_being_deleted!(id), :media_profile)
 
     pending_tasks =
       source
@@ -101,14 +101,14 @@ defmodule PinchflatWeb.Sources.SourceController do
   end
 
   def edit(conn, %{"id" => id}) do
-    source = Sources.get_source!(id)
+    source = Sources.get_source_not_being_deleted!(id)
     changeset = Sources.change_source(source)
 
     render(conn, :edit, source: source, changeset: changeset, media_profiles: media_profiles())
   end
 
   def update(conn, %{"id" => id, "source" => source_params}) do
-    source = Sources.get_source!(id)
+    source = Sources.get_source_not_being_deleted!(id)
 
     case Sources.update_source(source, Map.take(source_params, @form_fields)) do
       {:ok, source} ->
@@ -125,6 +125,8 @@ defmodule PinchflatWeb.Sources.SourceController do
     end
   end
 
+  # Unlike the other actions, this works for a source that's already being deleted, eg: to retry a
+  # deletion that failed. The same deletion isn't queued again while it's still queued or running
   def delete(conn, %{"id" => id} = params) do
     # This awkward comparison converts the string to a boolean
     delete_files = Map.get(params, "delete_files", "") == "true"
@@ -158,7 +160,7 @@ defmodule PinchflatWeb.Sources.SourceController do
 
   # A disabled source isn't indexed (see `MediaCollectionIndexingWorker`) so don't say it's been enqueued
   def force_index(conn, %{"source_id" => id}) do
-    case Sources.get_source!(id) do
+    case Sources.get_source_not_being_deleted!(id) do
       %Source{enabled: true} = source ->
         wrap_forced_action(
           conn,
@@ -209,8 +211,9 @@ defmodule PinchflatWeb.Sources.SourceController do
     |> redirect(to: ~p"/sources/#{source}")
   end
 
+  # A source that's being deleted 404s like one that's gone. Eg: a directory update would make its deletion wait
   defp wrap_forced_action(conn, source_id, message, fun) do
-    wrap_forced_action(conn, Sources.get_source!(source_id), message, fun)
+    wrap_forced_action(conn, Sources.get_source_not_being_deleted!(source_id), message, fun)
   end
 
   # Profiles marked for deletion are left out since moving a source onto one would get it deleted too

@@ -7,6 +7,7 @@ defmodule PinchflatWeb.SourceControllerTest do
 
   alias Pinchflat.Repo
   alias Pinchflat.Settings
+  alias Pinchflat.Profiles
   alias Pinchflat.Sources.Source
   alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Media.FileSyncingWorker
@@ -321,6 +322,19 @@ defmodule PinchflatWeb.SourceControllerTest do
       assert updated_source.custom_name == "New name"
       assert Map.take(updated_source, @source_path_fields) == Map.take(source, @source_path_fields)
     end
+
+    # Indexing keeps these to decide when to stop doing full indexes
+    test "doesn't set the source's indexing state from the request", %{conn: conn, source: source} do
+      params = %{
+        "custom_name" => "New name",
+        "last_indexed_at" => "2024-01-01T00:00:00Z",
+        "incomplete_first_index_count" => "3"
+      }
+
+      put(conn, ~p"/sources/#{source}", source: params)
+
+      assert %{custom_name: "New name", last_indexed_at: nil, incomplete_first_index_count: 0} = Repo.reload!(source)
+    end
   end
 
   describe "delete source in all cases" do
@@ -490,6 +504,78 @@ defmodule PinchflatWeb.SourceControllerTest do
 
       assert Phoenix.Flash.get(conn.assigns.flash, :info) ==
                "Directory update enqueued. Files will be moved in the background."
+    end
+  end
+
+  # A source that's being deleted is hidden everywhere, so it's treated like one that's already gone.
+  # Eg: a directory update would keep its deletion waiting
+  describe "when the source is being deleted" do
+    setup do
+      source = source_fixture(marked_for_deletion_at: now())
+      # Media for the forced downloads to enqueue
+      media_item_fixture(source_id: source.id, media_filepath: nil)
+      media_item_fixture(source_id: source.id, media_downloaded_at: now())
+
+      %{source: source}
+    end
+
+    test "show, edit and update return 404", %{conn: conn, source: source} do
+      assert_error_sent 404, fn -> get(conn, ~p"/sources/#{source}") end
+      assert_error_sent 404, fn -> get(conn, ~p"/sources/#{source}/edit") end
+      assert_error_sent 404, fn -> put(conn, ~p"/sources/#{source}", source: %{custom_name: "New name"}) end
+
+      assert Repo.reload!(source).custom_name == source.custom_name
+    end
+
+    for {action, worker} <- [
+          force_download_pending: MediaDownloadWorker,
+          force_redownload: MediaDownloadWorker,
+          force_index: MediaCollectionIndexingWorker,
+          force_metadata_refresh: SourceMetadataStorageWorker,
+          sync_files_on_disk: FileSyncingWorker,
+          update_directory: SourceDirectoryUpdateWorker
+        ] do
+      test "#{action} returns 404 without enqueuing anything", %{conn: conn, source: source} do
+        assert_error_sent 404, fn -> post(conn, "/sources/#{source.id}/#{unquote(action)}") end
+
+        refute_enqueued(worker: unquote(worker))
+      end
+    end
+
+    # Eg: to retry a deletion that failed
+    test "can be deleted again, which doesn't queue a second deletion", %{conn: conn, source: source} do
+      conn = delete(conn, ~p"/sources/#{source}?delete_files=true")
+      delete(conn, ~p"/sources/#{source}?delete_files=true")
+
+      assert redirected_to(conn) == ~p"/sources"
+      assert [%{args: %{"delete_files" => true}}] = all_enqueued(worker: SourceDeletionWorker)
+    end
+  end
+
+  # Deleting a media profile deletes its sources, so they're hidden too
+  describe "when the source's media profile is being deleted" do
+    setup do
+      media_profile = media_profile_fixture()
+      source = source_fixture(media_profile_id: media_profile.id)
+      {:ok, _} = Profiles.update_media_profile(media_profile, %{marked_for_deletion_at: now()})
+
+      %{source: source}
+    end
+
+    test "show, edit and update return 404", %{conn: conn, source: source} do
+      assert_error_sent 404, fn -> get(conn, ~p"/sources/#{source}") end
+      assert_error_sent 404, fn -> get(conn, ~p"/sources/#{source}/edit") end
+      assert_error_sent 404, fn -> put(conn, ~p"/sources/#{source}", source: %{custom_name: "New name"}) end
+
+      assert Repo.reload!(source).custom_name == source.custom_name
+    end
+
+    test "the forced actions return 404 without enqueuing anything", %{conn: conn, source: source} do
+      assert_error_sent 404, fn -> post(conn, ~p"/sources/#{source}/force_index") end
+      assert_error_sent 404, fn -> post(conn, ~p"/sources/#{source}/update_directory") end
+
+      refute_enqueued(worker: MediaCollectionIndexingWorker)
+      refute_enqueued(worker: SourceDirectoryUpdateWorker)
     end
   end
 

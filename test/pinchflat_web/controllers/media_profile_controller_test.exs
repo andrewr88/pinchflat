@@ -318,6 +318,30 @@ defmodule PinchflatWeb.MediaProfileControllerTest do
     end
   end
 
+  # A profile that's being deleted is hidden everywhere, so it's treated like one that's already gone
+  describe "when the media profile is being deleted" do
+    setup do
+      %{media_profile: media_profile_fixture(marked_for_deletion_at: now())}
+    end
+
+    test "show, edit and update return 404", %{conn: conn, media_profile: media_profile} do
+      assert_error_sent 404, fn -> get(conn, ~p"/media_profiles/#{media_profile}") end
+      assert_error_sent 404, fn -> get(conn, ~p"/media_profiles/#{media_profile}/edit") end
+      assert_error_sent 404, fn -> put(conn, ~p"/media_profiles/#{media_profile}", media_profile: @update_attrs) end
+
+      assert Repo.reload!(media_profile).name == media_profile.name
+    end
+
+    # Eg: to retry a deletion that failed
+    test "can be deleted again, which doesn't queue a second deletion", %{conn: conn, media_profile: media_profile} do
+      conn = delete(conn, ~p"/media_profiles/#{media_profile}")
+      delete(conn, ~p"/media_profiles/#{media_profile}")
+
+      assert redirected_to(conn) == ~p"/media_profiles"
+      assert [_] = all_enqueued(worker: MediaProfileDeletionWorker)
+    end
+  end
+
   defp create_media_profile(_) do
     media_profile = media_profile_fixture()
 

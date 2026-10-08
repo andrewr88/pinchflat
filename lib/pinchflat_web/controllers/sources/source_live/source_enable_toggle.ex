@@ -26,10 +26,13 @@ defmodule PinchflatWeb.Sources.SourceLive.SourceEnableToggle do
   end
 
   # The toggle only sets `enabled`, so nothing else is taken from the event. Other fields are set
-  # elsewhere, and some are the paths of files the app serves and later moves or deletes
+  # elsewhere, and some are the paths of files the app serves and later moves or deletes.
+  #
+  # A source that's being deleted isn't in the table, but the table can be out of date. Like for a
+  # source that's gone, this raises (so the table reloads) rather than enabling it again
   def handle_event("update", %{"source" => source_params}, %{assigns: assigns} = socket) do
     assigns.source_id
-    |> Sources.get_source!()
+    |> Sources.get_source_not_being_deleted!()
     |> Sources.update_source(Map.take(source_params, ["enabled"]))
 
     {:noreply, socket}

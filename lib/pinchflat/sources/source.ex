@@ -31,6 +31,7 @@ defmodule Pinchflat.Sources.Source do
     cookie_behaviour
     download_media
     last_indexed_at
+    incomplete_first_index_count
     original_url
     download_cutoff_date
     retention_period_days
@@ -81,6 +82,9 @@ defmodule Pinchflat.Sources.Source do
     field :cookie_behaviour, Ecto.Enum, values: [:disabled, :when_needed, :all_operations], default: :disabled
     field :download_media, :boolean, default: true
     field :last_indexed_at, :utc_datetime
+    # How many of the source's first indexes (ie: before it has a `last_indexed_at`) in a row yt-dlp
+    # didn't finish. See `SlowIndexingHelpers.index_and_enqueue_download_for_media_items/2`
+    field :incomplete_first_index_count, :integer, default: 0
     # Only download media items that were published after this date
     field :download_cutoff_date, :date
     field :retention_period_days, :integer

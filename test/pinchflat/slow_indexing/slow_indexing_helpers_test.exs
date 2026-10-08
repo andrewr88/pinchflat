@@ -326,6 +326,15 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpersTest do
       assert Repo.reload!(source).last_indexed_at == nil
     end
 
+    # Only an index that yt-dlp didn't finish counts towards marking a source as indexed anyway
+    test "doesn't count towards the incomplete first indexes if yt-dlp didn't write any media" do
+      source = source_fixture(last_indexed_at: nil, incomplete_first_index_count: 2)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert %{last_indexed_at: nil, incomplete_first_index_count: 2} = Repo.reload!(source)
+    end
+
     test "still enqueues a job for each pending media item", %{source: source} do
       media_item = media_item_fixture(source_id: source.id, media_filepath: nil)
 
@@ -409,6 +418,54 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpersTest do
 
       assert length(media_items) == 30
       assert DateTime.diff(DateTime.utc_now(), Repo.reload!(source).last_indexed_at) < 2
+    end
+
+    # Eg: a channel with a video that's permanently unavailable never finishes a full index, and
+    # scanning the whole channel every time is slow and risks bot checks
+    test "marks a source as indexed when its first index is incomplete 3 times in a row" do
+      # The test env only logs critical messages so let this module's logging through
+      Logger.put_module_level(SlowIndexingHelpers, :all)
+      on_exit(fn -> Logger.delete_module_level(SlowIndexingHelpers) end)
+      source = source_fixture(collection_type: :channel, last_indexed_at: nil)
+
+      assert {:error, :indexing_incomplete} = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert %{last_indexed_at: nil, incomplete_first_index_count: 1} = source = Repo.reload!(source)
+      assert {:error, :indexing_incomplete} = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert %{last_indexed_at: nil, incomplete_first_index_count: 2} = source = Repo.reload!(source)
+
+      log =
+        capture_log(fn ->
+          assert [_ | _] = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+        end)
+
+      assert %{last_indexed_at: %DateTime{}, incomplete_first_index_count: 0} = source = Repo.reload!(source)
+      assert DateTime.diff(DateTime.utc_now(), source.last_indexed_at) < 2
+      assert log =~ "[warning]"
+      assert log =~ ~s(source #{source.id} "#{source.custom_name}")
+
+      # From then on it's indexed like any other source that's been indexed before
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, opts, _ot, _addl_opts ->
+        assert :break_on_existing in opts
+        assert Keyword.has_key?(opts, :download_archive)
+
+        {:ok, ""}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+    end
+
+    test "starts counting again once a first index finishes" do
+      source = source_fixture(collection_type: :channel, last_indexed_at: nil)
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert %{incomplete_first_index_count: 1} = source = Repo.reload!(source)
+
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        {:ok, media_attributes_json(30)}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert %{last_indexed_at: %DateTime{}, incomplete_first_index_count: 0} = Repo.reload!(source)
     end
   end
 

@@ -58,6 +58,8 @@ defmodule Pinchflat.Downloading.MediaDownloader do
   # - If the media item fails the precheck, it returns {:error, :unsuitable_for_download, message}
   #   - However, if the precheck fails in a way that we think can be fixed by using cookies, we retry with cookies
   #     and return the result of that
+  # - The precheck also gives the filepath yt-dlp would download the media to. If that's outside the media
+  #   directory, nothing is downloaded and it returns {:error, :download_failed, message}
   # - If the precheck passes but the download fails, it normally returns {:error, :download_failed, message}
   #   - However, there are some errors we can recover from (eg: failure to communicate with SponsorBlock).
   #     In this case, we retry the download without SponsorBlock or, if that fails, use the JSON yt-dlp
@@ -107,6 +109,15 @@ defmodule Pinchflat.Downloading.MediaDownloader do
         Logger.warning(message)
 
         {:error, :unsuitable_for_download, message}
+
+      {:error, {:outside_media_directory, filepath}} ->
+        message =
+          "Not downloading media item ##{media_with_preloads.id}: yt-dlp would save it to #{inspect(filepath)}, " <>
+            "outside the media directory. A field that's a whole folder of the output template may be \"..\""
+
+        Logger.error(message)
+
+        {:error, :download_failed, message}
 
       {:error, message, _exit_code} ->
         Logger.error("yt-dlp download error for media item ##{media_with_preloads.id}: #{inspect(message)}")
@@ -331,12 +342,14 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     should_use_cookies = force_use_cookies || source_uses_cookies
 
     runner_opts = [output_filepath: output_filepath, use_cookies: should_use_cookies]
+    # With the download's output template, the check also gives the filepath the media would be downloaded to
+    status_opts = [output: DownloadOptionBuilder.build_output_path_for(item_with_preloads)]
 
-    case {YtDlpMedia.get_downloadable_status(url, use_cookies: should_use_cookies), should_use_cookies} do
-      {{:ok, :downloadable}, _} ->
-        YtDlpMedia.download(url, options, runner_opts)
+    case {YtDlpMedia.get_downloadable_status(url, status_opts, use_cookies: should_use_cookies), should_use_cookies} do
+      {{:ok, :downloadable, filepath}, _} ->
+        download_inside_media_directory(url, options, runner_opts, filepath)
 
-      {{:ok, :ignorable}, _} ->
+      {{:ok, :ignorable, _filepath}, _} ->
         {:error, :unsuitable_for_download}
 
       {{:error, _message, _exit_code} = err, false} ->
@@ -351,6 +364,21 @@ defmodule Pinchflat.Downloading.MediaDownloader do
 
       {err, _} ->
         err
+    end
+  end
+
+  # The output template is inside the media directory, but yt-dlp fills in its fields from the media's
+  # metadata. It writes a field that's a whole folder of the template as-is even if it's "..", and can turn
+  # other values into ".." when it makes them filename-safe. So the filepath yt-dlp gives the media is
+  # checked before anything is downloaded. yt-dlp works the filepath out before it gives the live status,
+  # failing if it can't, so it's only missing if something else gave the status
+  defp download_inside_media_directory(url, options, runner_opts, filepath) do
+    media_directory = Application.get_env(:pinchflat, :media_directory)
+
+    if is_nil(filepath) or FilesystemUtils.inside_directory?(filepath, media_directory) do
+      YtDlpMedia.download(url, options, runner_opts)
+    else
+      {:error, {:outside_media_directory, filepath}}
     end
   end
 
