@@ -106,7 +106,7 @@ defmodule Pinchflat.YtDlp.MediaCollection do
   as a compressed blob for possible future use. That's why it's not getting formatted like
   `get_source_details/1`
 
-  ! IMPORTANT ! - you'll always want to set `playlist_items: int` in `addl_opts.
+  ! IMPORTANT ! - you'll always want to set `playlist_items: int` in `command_opts`.
   This is great if you want to also return details about the videos in the playlists,
   but it should be set in all cases to not over-fetch data.
   For channels you should usually set this to 0 since channels return all the
