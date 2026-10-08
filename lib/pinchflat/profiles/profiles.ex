@@ -51,7 +51,8 @@ defmodule Pinchflat.Profiles do
   Deletes a media_profile, all its sources, and all their media items.
   Can optionally delete the media files.
 
-  Returns {:ok, %MediaProfile{}} | {:error, %Ecto.Changeset{}}
+  Returns {:ok, %MediaProfile{}} | {:error, %Ecto.Changeset{}}. The error is on `:sources`
+  if a source was added to the profile while its sources were being deleted.
   """
   def delete_media_profile(%MediaProfile{} = media_profile, opts \\ []) do
     delete_files = Keyword.get(opts, :delete_files, false)
@@ -62,7 +63,7 @@ defmodule Pinchflat.Profiles do
       Sources.delete_source(source, delete_files: delete_files)
     end)
 
-    Repo.delete(media_profile)
+    delete_media_profile_record(media_profile)
   end
 
   @doc """
@@ -70,5 +71,22 @@ defmodule Pinchflat.Profiles do
   """
   def change_media_profile(%MediaProfile{} = media_profile, attrs \\ %{}) do
     MediaProfile.changeset(media_profile, attrs)
+  end
+
+  # A source still on the profile fails the delete on its foreign key, the only one to a profile.
+  # SQLite doesn't say which foreign key failed, so Ecto can't match it to a `no_assoc_constraint`
+  # and raises instead of returning an error
+  defp delete_media_profile_record(media_profile) do
+    Repo.delete(media_profile)
+  rescue
+    error in Ecto.ConstraintError ->
+      if error.type == :foreign_key do
+        media_profile
+        |> Ecto.Changeset.change()
+        |> Ecto.Changeset.add_error(:sources, "are still associated with this entry")
+        |> Ecto.Changeset.apply_action(:delete)
+      else
+        reraise error, __STACKTRACE__
+      end
   end
 end

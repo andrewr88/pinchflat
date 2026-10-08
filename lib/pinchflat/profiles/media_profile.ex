@@ -35,6 +35,10 @@ defmodule Pinchflat.Profiles.MediaProfile do
 
   @required_fields ~w(name output_path_template)a
 
+  # The containers yt-dlp takes for `--audio-format` (audio only profiles) and `--remux-video` (all others)
+  @audio_formats ~w(best aac alac flac m4a mp3 opus vorbis wav)
+  @remux_formats ~w(avi flv gif mkv mov mp4 webm aac aiff alac flac m4a mka mp3 ogg opus vorbis wav)
+
   schema "media_profiles" do
     field :name, :string
     field :redownload_delay_days, :integer
@@ -85,6 +89,11 @@ defmodule Pinchflat.Profiles.MediaProfile do
     # Ensures it ends with `.{{ ext }}` or `.%(ext)s` or similar (with a little wiggle room)
     |> validate_format(:output_path_template, ext_regex(), message: "must end with .{{ ext }}")
     |> validate_number(:redownload_delay_days, greater_than_or_equal_to: 0)
+    |> validate_media_container()
+    # It goes into a yt-dlp format filter, eg: `bestaudio[language^=de]`
+    |> validate_format(:audio_track, ~r/\A(original|default|[A-Za-z]{2,3}(-[A-Za-z0-9]+)*)\z/,
+      message: "must be a language code (eg: de or en-US), original or default"
+    )
     |> unique_constraint(:name)
   end
 
@@ -92,6 +101,52 @@ defmodule Pinchflat.Profiles.MediaProfile do
   def ext_regex do
     ~r/\.({{ ?ext ?}}|%\( ?ext ?\)[sS])$/
   end
+
+  @doc """
+  Returns whether yt-dlp takes the container for a profile with the given resolution:
+  as `--audio-format` for audio only, otherwise as `--remux-video`. Both also take rules,
+  eg: "webm>mkv/mp4" remuxes webm to mkv and anything else to mp4.
+
+  Returns boolean()
+  """
+  def valid_media_container?(preferred_resolution, container) when is_binary(container) do
+    formats = media_container_formats(preferred_resolution)
+
+    container
+    |> String.split("/")
+    |> Enum.all?(fn rule ->
+      case String.split(rule, ">") do
+        [format] -> format in formats
+        [source_format, format] -> source_format =~ ~r/\A\w+\z/ and format in formats
+        _ -> false
+      end
+    end)
+  end
+
+  defp media_container_formats(:audio), do: @audio_formats
+  defp media_container_formats(_preferred_resolution), do: @remux_formats
+
+  # What's valid depends on whether the profile is audio only, so this is checked when either
+  # changes. Only then so a profile saved before this was checked can still be updated in
+  # other ways (eg: marked for deletion)
+  defp validate_media_container(%{changes: changes} = changeset)
+       when is_map_key(changes, :media_container) or is_map_key(changes, :preferred_resolution) do
+    preferred_resolution = get_field(changeset, :preferred_resolution)
+    container = get_field(changeset, :media_container)
+
+    cond do
+      is_nil(container) or valid_media_container?(preferred_resolution, container) ->
+        changeset
+
+      preferred_resolution == :audio ->
+        add_error(changeset, :media_container, "must be one of #{Enum.join(@audio_formats, ", ")} for audio only")
+
+      true ->
+        add_error(changeset, :media_container, "must be one of #{Enum.join(@remux_formats, ", ")}")
+    end
+  end
+
+  defp validate_media_container(changeset), do: changeset
 
   @doc false
   def json_exluded_fields do

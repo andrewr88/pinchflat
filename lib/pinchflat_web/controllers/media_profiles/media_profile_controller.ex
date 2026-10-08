@@ -9,6 +9,31 @@ defmodule PinchflatWeb.MediaProfiles.MediaProfileController do
   alias Pinchflat.Profiles.MediaProfile
   alias Pinchflat.Profiles.MediaProfileDeletionWorker
 
+  # Only the profile form's fields are taken from the request. The app sets the others itself,
+  # eg: marked_for_deletion_at, which hides the profile and keeps sources off it until it's deleted
+  @form_fields ~w(
+    name
+    output_path_template
+    download_subs
+    embed_subs
+    download_auto_subs
+    sub_langs
+    audio_track
+    download_thumbnail
+    embed_thumbnail
+    download_metadata
+    embed_metadata
+    shorts_behaviour
+    livestream_behaviour
+    preferred_resolution
+    media_container
+    redownload_delay_days
+    download_nfo
+    download_source_images
+    sponsorblock_behaviour
+    sponsorblock_categories
+  )
+
   def index(conn, _params) do
     media_profiles_query =
       from mp in MediaProfile,
@@ -50,7 +75,7 @@ defmodule PinchflatWeb.MediaProfiles.MediaProfileController do
   end
 
   def create(conn, %{"media_profile" => media_profile_params}) do
-    case Profiles.create_media_profile(media_profile_params) do
+    case Profiles.create_media_profile(Map.take(media_profile_params, @form_fields)) do
       {:ok, media_profile} ->
         redirect_location =
           if Settings.get!(:onboarding), do: ~p"/?onboarding=1", else: ~p"/media_profiles/#{media_profile}"
@@ -86,7 +111,7 @@ defmodule PinchflatWeb.MediaProfiles.MediaProfileController do
   def update(conn, %{"id" => id, "media_profile" => media_profile_params}) do
     media_profile = Profiles.get_media_profile!(id)
 
-    case Profiles.update_media_profile(media_profile, media_profile_params) do
+    case Profiles.update_media_profile(media_profile, Map.take(media_profile_params, @form_fields)) do
       {:ok, media_profile} ->
         conn
         |> put_flash(:info, "Media profile updated successfully.")

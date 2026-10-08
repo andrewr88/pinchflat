@@ -1,5 +1,6 @@
 defmodule Pinchflat.Downloading.QualityOptionBuilderTest do
   use Pinchflat.DataCase
+  import ExUnit.CaptureLog
   import Pinchflat.ProfilesFixtures
 
   alias Pinchflat.Profiles
@@ -59,6 +60,40 @@ defmodule Pinchflat.Downloading.QualityOptionBuilderTest do
       assert res = QualityOptionBuilder.build(media_profile)
 
       assert {:format, "bestaudio/best"} in res
+    end
+
+    test "uses an audio format container as is", %{media_profile: media_profile} do
+      for container <- ["best", "aac", "m4a", "mp3", "opus", "wav", "webm>opus/mp3"] do
+        res = QualityOptionBuilder.build(%{media_profile | media_container: container})
+
+        assert {:audio_format, container} in res
+      end
+    end
+  end
+
+  # Profiles saved before the container was validated can have one that yt-dlp rejects
+  # as an audio format, which fails every download
+  describe "build/1 when an audio profile has a container that isn't an audio format" do
+    setup do
+      Logger.put_module_level(QualityOptionBuilder, :all)
+      on_exit(fn -> Logger.delete_module_level(QualityOptionBuilder) end)
+
+      {:ok, media_profile: media_profile_fixture(%{preferred_resolution: :audio})}
+    end
+
+    test "uses the best audio format and logs a warning", %{media_profile: media_profile} do
+      for container <- ["mp4", "mkv", "webm", "ogg", "MP3", " mp3", "m4a>mp4", "foo"] do
+        log =
+          capture_log(fn ->
+            res = QualityOptionBuilder.build(%{media_profile | media_container: container})
+
+            assert {:audio_format, "best"} in res
+          end)
+
+        assert log =~ "[warning]"
+        assert log =~ "media profile ##{media_profile.id}"
+        assert log =~ inspect(container)
+      end
     end
   end
 

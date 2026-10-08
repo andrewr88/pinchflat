@@ -8,6 +8,7 @@ defmodule Pinchflat.ProfilesTest do
   alias Pinchflat.Profiles
   alias Pinchflat.Profiles.MediaProfile
 
+  @valid_attrs %{name: "some name", output_path_template: "output_template.{{ ext }}"}
   @invalid_attrs %{name: nil, output_path_template: nil}
 
   describe "schema" do
@@ -139,6 +140,20 @@ defmodule Pinchflat.ProfilesTest do
 
       refute File.exists?(media_item.media_filepath)
     end
+
+    # eg: a source being created on the profile is saved after its sources were listed
+    test "returns an error if a source is added to the profile while it's being deleted" do
+      media_profile = media_profile_fixture()
+      source = source_fixture(media_profile_id: media_profile.id)
+      media_item_with_attachments(%{source_id: source.id})
+      # Runs while the existing source's media is being deleted
+      expect(UserScriptRunnerMock, :run, fn :media_deleted, _ -> source_fixture(media_profile_id: media_profile.id) end)
+
+      assert {:error, %Ecto.Changeset{} = changeset} = Profiles.delete_media_profile(media_profile, delete_files: true)
+
+      assert "are still associated with this entry" in errors_on(changeset).sources
+      assert Repo.reload!(media_profile)
+    end
   end
 
   describe "change_media_profile/1" do
@@ -181,6 +196,138 @@ defmodule Pinchflat.ProfilesTest do
 
         refute cs.valid?
       end
+    end
+  end
+
+  describe "change_media_profile/2 when testing media container validation" do
+    # Audio only profiles pass it to yt-dlp's `--audio-format`, others to `--remux-video`
+    test "allows the containers yt-dlp accepts for the profile's resolution" do
+      valid_containers = [
+        {:audio, nil},
+        {:audio, "best"},
+        {:audio, "m4a"},
+        {:audio, "mp3"},
+        {:audio, "opus"},
+        {:audio, "flac"},
+        {:audio, "webm>opus/mp3"},
+        {:"1080p", nil},
+        {:"1080p", "mp4"},
+        {:"1080p", "mkv"},
+        {:"1080p", "webm"},
+        {:"1080p", "mp3"},
+        {:"720p", "webm>mkv/mp4"},
+        {:"720p", "aac>m4a/mov>mp4/mkv"}
+      ]
+
+      for {resolution, container} <- valid_containers do
+        attrs = %{preferred_resolution: resolution, media_container: container}
+        cs = Profiles.change_media_profile(%MediaProfile{}, Map.merge(@valid_attrs, attrs))
+
+        assert cs.valid?, "expected #{inspect(container)} to be valid for #{resolution}"
+      end
+    end
+
+    test "rejects containers yt-dlp doesn't accept for the profile's resolution" do
+      invalid_containers = [
+        {:audio, "mp4"},
+        {:audio, "mkv"},
+        {:audio, "webm"},
+        {:audio, "ogg"},
+        {:audio, "MP3"},
+        {:audio, " mp3"},
+        {:audio, "m4a>mp4"},
+        {:"1080p", "best"},
+        {:"1080p", "foo"},
+        {:"1080p", "MP4"},
+        {:"1080p", "mp4 "},
+        {:"1080p", "mp4/"},
+        {:"1080p", ">mp4"},
+        {:"1080p", "webm>foo"},
+        {:"1080p", "web-m>mp4"},
+        {:"1080p", "mp4\n"},
+        {:"1080p", "mp4 --exec rm"}
+      ]
+
+      for {resolution, container} <- invalid_containers do
+        attrs = %{preferred_resolution: resolution, media_container: container}
+        cs = Profiles.change_media_profile(%MediaProfile{}, Map.merge(@valid_attrs, attrs))
+
+        refute cs.valid?, "expected #{inspect(container)} to be invalid for #{resolution}"
+        assert [_] = errors_on(cs).media_container
+      end
+    end
+
+    test "treats a blank container as the default" do
+      cs = Profiles.change_media_profile(%MediaProfile{}, Map.put(@valid_attrs, :media_container, "  "))
+
+      assert cs.valid?
+      assert get_field(cs, :media_container) == nil
+    end
+
+    test "checks the stored container when the resolution changes" do
+      media_profile = media_profile_fixture(preferred_resolution: :"1080p", media_container: "mp4")
+
+      cs = Profiles.change_media_profile(media_profile, %{preferred_resolution: :audio})
+
+      assert errors_on(cs).media_container == [
+               "must be one of best, aac, alac, flac, m4a, mp3, opus, vorbis, wav for audio only"
+             ]
+    end
+
+    test "checks the stored resolution when the container changes" do
+      media_profile = media_profile_fixture(preferred_resolution: :audio)
+
+      cs = Profiles.change_media_profile(media_profile, %{media_container: "mp4"})
+
+      refute cs.valid?
+    end
+
+    # eg: a profile saved before containers were checked can still be marked for deletion
+    test "doesn't check a stored container when neither it nor the resolution changes" do
+      media_profile = media_profile_fixture(preferred_resolution: :audio)
+      {:ok, media_profile} = Repo.update(change(media_profile, media_container: "mp4"))
+
+      assert {:ok, _} = Profiles.update_media_profile(media_profile, %{marked_for_deletion_at: now()})
+    end
+  end
+
+  describe "change_media_profile/2 when testing audio track validation" do
+    test "allows a language code, original or default" do
+      for audio_track <- [nil, "original", "default", "de", "en", "EN", "yue", "en-US", "pt-BR", "zh-Hans", "es-419"] do
+        cs = Profiles.change_media_profile(%MediaProfile{}, Map.put(@valid_attrs, :audio_track, audio_track))
+
+        assert cs.valid?, "expected #{inspect(audio_track)} to be valid"
+      end
+    end
+
+    # It's put into a yt-dlp format filter, eg: `bestaudio[language^=de]`
+    test "rejects anything else" do
+      invalid_audio_tracks = [
+        "d",
+        "deutsch",
+        "Original",
+        "en_US",
+        "en-",
+        "-en",
+        "en-US!",
+        "de\n",
+        "de]/worst[",
+        "de]+bestvideo"
+      ]
+
+      for audio_track <- invalid_audio_tracks do
+        cs = Profiles.change_media_profile(%MediaProfile{}, Map.put(@valid_attrs, :audio_track, audio_track))
+
+        refute cs.valid?, "expected #{inspect(audio_track)} to be invalid"
+        assert [_] = errors_on(cs).audio_track
+      end
+    end
+
+    test "treats a blank audio track as unset" do
+      cs = Profiles.change_media_profile(%MediaProfile{}, Map.put(@valid_attrs, :audio_track, " "))
+
+      assert cs.valid?
+      assert get_field(cs, :audio_track) == nil
     end
   end
 end

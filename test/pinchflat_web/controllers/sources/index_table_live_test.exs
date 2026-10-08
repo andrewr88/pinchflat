@@ -6,6 +6,7 @@ defmodule PinchflatWeb.Sources.SourceLive.IndexTableLiveTest do
   import Pinchflat.SourcesFixtures
   import Pinchflat.ProfilesFixtures
 
+  alias Pinchflat.Profiles
   alias Pinchflat.Sources.Source
   alias Pinchflat.Utils.FilesystemUtils
   alias PinchflatWeb.Sources.SourceLive.IndexTableLive
@@ -28,8 +29,9 @@ defmodule PinchflatWeb.Sources.SourceLive.IndexTableLiveTest do
     end
 
     test "omits sources who's media profile has marked_for_deletion_at set", %{conn: conn} do
-      media_profile = media_profile_fixture(marked_for_deletion_at: DateTime.utc_now())
+      media_profile = media_profile_fixture()
       source = source_fixture(media_profile_id: media_profile.id)
+      {:ok, _} = Profiles.update_media_profile(media_profile, %{marked_for_deletion_at: DateTime.utc_now()})
 
       {:ok, _view, html} = live_isolated(conn, IndexTableLive, session: create_session())
 

@@ -5,6 +5,7 @@ defmodule PinchflatWeb.MediaProfileControllerTest do
 
   alias Pinchflat.Repo
   alias Pinchflat.Settings
+  alias Pinchflat.Profiles.MediaProfile
   alias Pinchflat.Profiles.MediaProfileDeletionWorker
 
   @create_attrs %{name: "some name", output_path_template: "output_template.{{ ext }}"}
@@ -80,6 +81,15 @@ defmodule PinchflatWeb.MediaProfileControllerTest do
       refute html_response(conn, 200) =~ "MENU"
     end
 
+    # A profile marked for deletion is hidden and can't be given sources
+    test "doesn't set marked_for_deletion_at from the request", %{conn: conn} do
+      params = Map.put(@create_attrs, :marked_for_deletion_at, "2024-01-01T00:00:00Z")
+      conn = post(conn, ~p"/media_profiles", media_profile: params)
+
+      assert %{id: id} = redirected_params(conn)
+      assert Repo.get!(MediaProfile, id).marked_for_deletion_at == nil
+    end
+
     test "preloads some attributes when using a template", %{conn: conn} do
       profile = media_profile_fixture(name: "My first profile", download_subs: true, sub_langs: "de")
 
@@ -116,6 +126,71 @@ defmodule PinchflatWeb.MediaProfileControllerTest do
     test "renders errors when data is invalid", %{conn: conn, media_profile: media_profile} do
       conn = put(conn, ~p"/media_profiles/#{media_profile}", media_profile: @invalid_attrs)
       assert html_response(conn, 200) =~ "Editing \"#{media_profile.name}\""
+    end
+
+    test "saves each field on the form", %{conn: conn, media_profile: media_profile} do
+      form_params = %{
+        "name" => "New name",
+        "output_path_template" => "/{{ title }}.{{ ext }}",
+        "download_subs" => "true",
+        "download_auto_subs" => "true",
+        "embed_subs" => "true",
+        "sub_langs" => "de",
+        "download_thumbnail" => "true",
+        "embed_thumbnail" => "true",
+        "download_source_images" => "true",
+        "download_metadata" => "true",
+        "embed_metadata" => "true",
+        "download_nfo" => "true",
+        "sponsorblock_behaviour" => "remove",
+        "sponsorblock_categories" => ["sponsor", "intro"],
+        "shorts_behaviour" => "exclude",
+        "livestream_behaviour" => "only",
+        "audio_track" => "de",
+        "preferred_resolution" => "720p",
+        "media_container" => "mkv",
+        "redownload_delay_days" => "7"
+      }
+
+      # Fails when a field is added to the form, as a reminder to make sure it can be saved
+      edit_html = conn |> get(~p"/media_profiles/#{media_profile}/edit") |> html_response(200)
+      assert form_field_names(edit_html, "media_profile") == Enum.sort(Map.keys(form_params))
+
+      put(conn, ~p"/media_profiles/#{media_profile}", media_profile: form_params)
+
+      assert %MediaProfile{
+               name: "New name",
+               output_path_template: "/{{ title }}.{{ ext }}",
+               download_subs: true,
+               download_auto_subs: true,
+               embed_subs: true,
+               sub_langs: "de",
+               download_thumbnail: true,
+               embed_thumbnail: true,
+               download_source_images: true,
+               download_metadata: true,
+               embed_metadata: true,
+               download_nfo: true,
+               sponsorblock_behaviour: :remove,
+               sponsorblock_categories: ["sponsor", "intro"],
+               shorts_behaviour: :exclude,
+               livestream_behaviour: :only,
+               audio_track: "de",
+               preferred_resolution: :"720p",
+               media_container: "mkv",
+               redownload_delay_days: 7
+             } = Repo.reload!(media_profile)
+    end
+
+    # A profile marked for deletion is hidden and can't be given sources
+    test "doesn't set marked_for_deletion_at from the request", %{conn: conn, media_profile: media_profile} do
+      params = Map.put(@update_attrs, :marked_for_deletion_at, "2024-01-01T00:00:00Z")
+      put(conn, ~p"/media_profiles/#{media_profile}", media_profile: params)
+
+      updated_media_profile = Repo.reload!(media_profile)
+
+      assert updated_media_profile.name == "some updated name"
+      assert updated_media_profile.marked_for_deletion_at == nil
     end
   end
 
@@ -164,5 +239,15 @@ defmodule PinchflatWeb.MediaProfileControllerTest do
     media_profile = media_profile_fixture()
 
     %{media_profile: media_profile}
+  end
+
+  # The fields of a form's inputs, eg: "name" for `name="media_profile[name]"` and
+  # "sponsorblock_categories" for `name="media_profile[sponsorblock_categories][]"`
+  defp form_field_names(html, param_name) do
+    ~r/name="#{param_name}\[(\w+)\](?:\[\])?"/
+    |> Regex.scan(html, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 end

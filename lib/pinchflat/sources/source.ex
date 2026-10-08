@@ -124,6 +124,7 @@ defmodule Pinchflat.Sources.Source do
     |> dynamic_default(:custom_name, fn cs -> get_field(cs, :collection_name) end)
     |> dynamic_default(:uuid, fn _ -> Ecto.UUID.generate() end)
     |> validate_required(required_fields)
+    |> validate_media_profile_not_being_deleted()
     |> validate_title_regex()
     |> validate_min_and_max_durations()
     |> validate_number(:retention_period_days, greater_than_or_equal_to: 0)
@@ -171,6 +172,26 @@ defmodule Pinchflat.Sources.Source do
   end
 
   defp validate_title_regex(changeset), do: changeset
+
+  # The source form only offers profiles that aren't being deleted, but a request can name any,
+  # and a source on a profile that's being deleted is deleted with it. Only checked when the source
+  # is new or changes profile so a source whose profile is being deleted can still be updated
+  defp validate_media_profile_not_being_deleted(changeset) do
+    new_source? = changeset.data.__meta__.state == :built
+    media_profile_id = get_field(changeset, :media_profile_id)
+
+    if (new_source? or changed?(changeset, :media_profile_id)) and media_profile_being_deleted?(media_profile_id) do
+      add_error(changeset, :media_profile_id, "is being deleted")
+    else
+      changeset
+    end
+  end
+
+  defp media_profile_being_deleted?(nil), do: false
+
+  defp media_profile_being_deleted?(media_profile_id) do
+    match?(%MediaProfile{marked_for_deletion_at: %DateTime{}}, Repo.get(MediaProfile, media_profile_id))
+  end
 
   # Uses `get_field` so changing just one bound is still checked against the stored other one.
   # Only runs when a bound changes so a source already stored with min >= max can still be

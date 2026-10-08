@@ -43,6 +43,16 @@ defmodule Pinchflat.Sources.SourceDirectoryUpdateWorker do
   end
 
   @doc """
+  Returns whether a directory update is running for the source. Deleting the source
+  cancels its jobs, which would kill a running update partway through moving the files.
+
+  Returns boolean()
+  """
+  def running_for?(source) do
+    Tasks.list_tasks_for(source, "SourceDirectoryUpdateWorker", [:executing]) != []
+  end
+
+  @doc """
   Moves a source's files to match its current custom name and output path template
   with `Sources.update_source_directory/1`, which rolls back a failed update itself.
   A failed update's errors (including any files that couldn't be moved back) are

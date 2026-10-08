@@ -7,6 +7,7 @@ defmodule Pinchflat.SourcesTest do
   import Pinchflat.SourcesFixtures
 
   alias Pinchflat.Sources
+  alias Pinchflat.Profiles
   alias Pinchflat.Sources.Source
   alias Pinchflat.Media.MediaItem
   alias Pinchflat.Utils.FilesystemUtils
@@ -308,6 +309,17 @@ defmodule Pinchflat.SourcesTest do
       expect(YtDlpRunnerMock, :run, 0, &channel_mock/5)
 
       assert {:error, %Ecto.Changeset{}} = Sources.create_source(@invalid_source_attrs)
+    end
+
+    # The form only offers profiles that aren't being deleted, but the request can name any
+    test "creation fails if the media profile is being deleted" do
+      expect(YtDlpRunnerMock, :run, 0, &channel_mock/5)
+      media_profile = media_profile_fixture(marked_for_deletion_at: now())
+
+      attrs = %{media_profile_id: media_profile.id, original_url: "https://www.youtube.com/channel/abc123"}
+
+      assert {:error, %Ecto.Changeset{} = changeset} = Sources.create_source(attrs)
+      assert "is being deleted" in errors_on(changeset).media_profile_id
     end
 
     test "creation will schedule the indexing task" do
@@ -617,6 +629,26 @@ defmodule Pinchflat.SourcesTest do
       assert {:ok, %Source{}} = Sources.update_source(source, update_attrs)
 
       refute_enqueued(worker: SourceMetadataStorageWorker)
+    end
+
+    test "updating fails if the new media profile is being deleted" do
+      source = source_fixture()
+      media_profile = media_profile_fixture(marked_for_deletion_at: now())
+
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Sources.update_source(source, %{media_profile_id: media_profile.id})
+
+      assert "is being deleted" in errors_on(changeset).media_profile_id
+      assert Repo.reload!(source).media_profile_id == source.media_profile_id
+    end
+
+    # eg: it's indexed while its profile waits to be deleted
+    test "updating still works if the source's own media profile is being deleted" do
+      source = source_fixture()
+      media_profile = Repo.preload(source, :media_profile).media_profile
+      {:ok, _} = Profiles.update_media_profile(media_profile, %{marked_for_deletion_at: now()})
+
+      assert {:ok, %Source{}} = Sources.update_source(source, %{custom_name: "New name"})
     end
   end
 

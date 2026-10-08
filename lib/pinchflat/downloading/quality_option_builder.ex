@@ -6,6 +6,8 @@ defmodule Pinchflat.Downloading.QualityOptionBuilder do
   place in the main module.
   """
 
+  require Logger
+
   alias Pinchflat.Settings
   alias Pinchflat.Profiles.MediaProfile
 
@@ -14,13 +16,13 @@ defmodule Pinchflat.Downloading.QualityOptionBuilder do
 
   Includes things like container, preferred format/codec, and audio track options.
   """
-  def build(%MediaProfile{preferred_resolution: :audio, media_container: container} = media_profile) do
+  def build(%MediaProfile{preferred_resolution: :audio} = media_profile) do
     acodec = Settings.get!(:audio_codec_preference)
 
     [
       :extract_audio,
       format_sort: "+acodec:#{acodec}",
-      audio_format: container || "best",
+      audio_format: build_audio_format(media_profile),
       format: build_format_string(media_profile)
     ]
   end
@@ -36,6 +38,23 @@ defmodule Pinchflat.Downloading.QualityOptionBuilder do
       format_sort: "res:#{resolution_string},+codec:#{vcodec}:#{acodec}",
       format: build_format_string(media_profile)
     ]
+  end
+
+  defp build_audio_format(%MediaProfile{media_container: nil}), do: "best"
+
+  # A profile saved before its container was validated can have one that yt-dlp doesn't take
+  # as an audio format (eg: "mp4", left from before it was made audio only). That fails every download
+  defp build_audio_format(%MediaProfile{media_container: container} = media_profile) do
+    if MediaProfile.valid_media_container?(:audio, container) do
+      container
+    else
+      Logger.warning(
+        "Using the best audio format for media profile ##{media_profile.id} since its " <>
+          "media container (#{inspect(container)}) isn't an audio format yt-dlp takes"
+      )
+
+      "best"
+    end
   end
 
   defp build_format_string(%MediaProfile{preferred_resolution: :audio, audio_track: audio_track}) do

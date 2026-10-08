@@ -125,7 +125,7 @@
       />
     </section>
 
-    <section x-show="advancedMode">
+    <section x-show={"advancedMode || #{f[:audio_track].errors != []}"}>
       <.input
         field={f[:audio_track]}
         placeholder="de"
@@ -224,7 +224,7 @@
       />
     </section>
 
-    <section x-show="advancedMode">
+    <section x-show={"advancedMode || #{f[:media_container].errors != []}"}>
       <.input
         field={f[:media_container]}
         type="text"

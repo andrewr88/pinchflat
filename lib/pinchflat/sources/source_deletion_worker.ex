@@ -9,8 +9,8 @@ defmodule Pinchflat.Sources.SourceDeletionWorker do
   require Logger
 
   alias __MODULE__
-  alias Pinchflat.Tasks
   alias Pinchflat.Sources
+  alias Pinchflat.Sources.SourceDirectoryUpdateWorker
 
   # How long to wait before checking again whether the source's directory update has finished
   @directory_update_wait_seconds 30
@@ -42,7 +42,7 @@ defmodule Pinchflat.Sources.SourceDeletionWorker do
     delete_files = Map.get(args, "delete_files", false)
     source = Sources.get_source!(source_id)
 
-    if directory_update_running?(source) do
+    if SourceDirectoryUpdateWorker.running_for?(source) do
       {:snooze, @directory_update_wait_seconds}
     else
       Sources.delete_source(source, delete_files: delete_files)
@@ -50,9 +50,5 @@ defmodule Pinchflat.Sources.SourceDeletionWorker do
   rescue
     Ecto.NoResultsError -> Logger.info("#{__MODULE__} discarded: source #{source_id} not found")
     Ecto.StaleEntryError -> Logger.info("#{__MODULE__} discarded: source #{source_id} stale")
-  end
-
-  defp directory_update_running?(source) do
-    Tasks.list_tasks_for(source, "SourceDirectoryUpdateWorker", [:executing]) != []
   end
 end
