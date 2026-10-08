@@ -38,7 +38,9 @@ defmodule Pinchflat.Utils.NumberUtils do
   end
 
   @doc """
-  Adds jitter to a number based on a percentage. Returns 0 if the number is less than or equal to 0.
+  Adds a random jitter to a number: an integer from 1 to `round(num * jitter_percentage)`, or just 1
+  if that rounds down to 0. So the number itself is never returned. The result is rounded, eg:
+  `add_jitter(100, 0.1)` returns 101..110. Returns 0 if the number is less than or equal to 0.
 
   Returns integer()
   """
@@ -46,7 +48,7 @@ defmodule Pinchflat.Utils.NumberUtils do
   def add_jitter(num, _jitter_percentage) when num <= 0, do: 0
 
   def add_jitter(num, jitter_percentage) do
-    jitter = :rand.uniform(round(num * jitter_percentage))
+    jitter = :rand.uniform(max(round(num * jitter_percentage), 1))
 
     round(num + jitter)
   end

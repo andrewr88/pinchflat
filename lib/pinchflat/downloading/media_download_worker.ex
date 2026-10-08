@@ -96,8 +96,12 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
     (is_eligible && source.download_media && !media_item.prevent_download) || should_force
   end
 
-  # If a user script exists and, when run, returns a non-zero exit code, prevent this and all future downloads
-  # of the media item.
+  # If a user script exists and, when run, returns an exit code from 1 to 125, that's a veto: prevent this and all
+  # future downloads of the media item.
+  #
+  # Higher exit codes mean the script never got to decide: it couldn't run (126: the lifecycle file isn't executable,
+  # 127: it or its interpreter wasn't found) or it was killed (128 + the signal's number). That's logged as an error
+  # and the media is downloaded anyway, since a broken script would otherwise prevent every download for good.
   #
   # Forced downloads are an explicit request from the user and already override `prevent_download`, so the
   # script still runs (keeping it paired with the `media_downloaded` script) but its veto is ignored and not
@@ -105,20 +109,33 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
   # Any later download that isn't forced runs the script again, so it can still veto those.
   defp pre_download_user_script_allows?(media_item, should_force) do
     case {run_user_script(:media_pre_download, media_item), should_force} do
-      {{:ok, _, exit_code}, true} when exit_code != 0 ->
+      {{:ok, _, exit_code}, true} when exit_code in 1..125 ->
         Logger.info("Pre-download user script vetoed media item ##{media_item.id} but it's forced. Downloading anyway")
 
         true
 
-      {{:ok, _, exit_code}, _} when exit_code != 0 ->
+      {{:ok, _, exit_code}, _} when exit_code in 1..125 ->
         {:ok, _} = Media.update_media_item(media_item, %{prevent_download: true})
 
         false
+
+      {{:ok, _, exit_code}, _} when exit_code != 0 ->
+        Logger.error(
+          "Pre-download user script #{UserScriptRunner.lifecycle_filepath()} failed with exit code #{exit_code} " <>
+            "(#{describe_script_failure(exit_code)}). Only exit codes from 1 to 125 are a veto, so media item " <>
+            "##{media_item.id} is downloaded anyway"
+        )
+
+        true
 
       _ ->
         true
     end
   end
+
+  defp describe_script_failure(126), do: "the file isn't executable"
+  defp describe_script_failure(127), do: "the file or its interpreter wasn't found"
+  defp describe_script_failure(_exit_code), do: "it was killed by a signal"
 
   defp download_media_and_schedule_jobs(media_item, is_quality_upgrade, should_force, is_redownload) do
     overwrite_behaviour = if should_force || is_quality_upgrade, do: :force_overwrites, else: :no_force_overwrites

@@ -1,6 +1,7 @@
 defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
   use Pinchflat.DataCase
 
+  import ExUnit.CaptureLog
   import Pinchflat.MediaFixtures
   import Pinchflat.SourcesFixtures
   import Pinchflat.ProfilesFixtures
@@ -10,6 +11,7 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
   alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Downloading.DownloadingHelpers
   alias Pinchflat.Downloading.MediaDownloadWorker
+  alias Pinchflat.Lifecycle.UserScripts.CommandRunner, as: UserScriptRunner
 
   setup do
     stub(YtDlpRunnerMock, :run, fn
@@ -688,6 +690,64 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
       assert media_item.prevent_download
     end
 
+    test "any pre-download script exit code up to 125 is a veto", %{media_item: media_item} do
+      expect(UserScriptRunnerMock, :run, fn :media_pre_download, _ -> {:ok, "", 125} end)
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+      media_item = Repo.reload!(media_item)
+
+      refute media_item.media_filepath
+      assert media_item.prevent_download
+    end
+
+    # Exit codes from 126 mean the script couldn't run or was killed, so it never got to veto anything
+    test "downloads media if the pre-download script isn't executable", %{media_item: media_item} do
+      # A real lifecycle file that'd allow the download if it could run
+      lifecycle_filepath = write_lifecycle_file("#!/bin/bash\nexit 0\n", 0o644)
+
+      expect(UserScriptRunnerMock, :run, fn :media_pre_download, data ->
+        assert {:ok, _, 126} = result = UserScriptRunner.run(:media_pre_download, data)
+
+        result
+      end)
+
+      expect(UserScriptRunnerMock, :run, fn :media_downloaded, _ -> {:ok, "", 0} end)
+      # The test env only logs critical messages so let the worker's logging through
+      Logger.put_module_level(MediaDownloadWorker, :all)
+      on_exit(fn -> Logger.delete_module_level(MediaDownloadWorker) end)
+
+      log = capture_log(fn -> assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id}) end)
+      media_item = Repo.reload!(media_item)
+
+      assert media_item.media_filepath
+      refute media_item.prevent_download
+      assert log =~ "[error]"
+      assert log =~ lifecycle_filepath
+      assert log =~ "exit code 126"
+    end
+
+    test "downloads media if the pre-download script's interpreter isn't found", %{media_item: media_item} do
+      expect(UserScriptRunnerMock, :run, fn :media_pre_download, _ -> {:ok, "", 127} end)
+      expect(UserScriptRunnerMock, :run, fn :media_downloaded, _ -> {:ok, "", 0} end)
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+      media_item = Repo.reload!(media_item)
+
+      assert media_item.media_filepath
+      refute media_item.prevent_download
+    end
+
+    test "downloads media if the pre-download script is killed", %{media_item: media_item} do
+      expect(UserScriptRunnerMock, :run, fn :media_pre_download, _ -> {:ok, "", 137} end)
+      expect(UserScriptRunnerMock, :run, fn :media_downloaded, _ -> {:ok, "", 0} end)
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+      media_item = Repo.reload!(media_item)
+
+      assert media_item.media_filepath
+      refute media_item.prevent_download
+    end
+
     test "downloads media if the pre-download script is not present", %{media_item: media_item} do
       expect(UserScriptRunnerMock, :run, fn :media_pre_download, _ -> {:ok, :no_executable} end)
       expect(UserScriptRunnerMock, :run, fn :media_downloaded, _ -> {:ok, :no_executable} end)
@@ -793,5 +853,15 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
     ten_days_ago = now_minus(10, :days)
 
     media_item_with_attachments(%{source_id: source.id, uploaded_at: ten_days_ago, media_downloaded_at: ten_days_ago})
+  end
+
+  # The user script the real runner runs, removed once the test is done
+  defp write_lifecycle_file(contents, mode) do
+    filepath = Path.join([Application.get_env(:pinchflat, :extras_directory), "user-scripts", "lifecycle"])
+    FilesystemUtils.write_p!(filepath, contents)
+    File.chmod!(filepath, mode)
+    on_exit(fn -> File.rm(filepath) end)
+
+    filepath
   end
 end

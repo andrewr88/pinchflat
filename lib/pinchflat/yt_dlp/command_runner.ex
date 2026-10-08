@@ -27,7 +27,7 @@ defmodule Pinchflat.YtDlp.CommandRunner do
     - :skip_sleep_interval - if true, will not add the sleep interval options to the command.
       Usually only used for commands that would be UI-blocking
 
-  Returns {:ok, binary()} | {:error, output, status}.
+  Returns {:ok, binary()} | {:error, output, status} | {:error, atom()} (if the output file can't be read).
   """
   @impl YtDlpCommandRunner
   def run(url, action_name, command_opts, output_template, addl_opts \\ []) do

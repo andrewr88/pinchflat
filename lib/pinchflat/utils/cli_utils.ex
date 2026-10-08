@@ -9,8 +9,9 @@ defmodule Pinchflat.Utils.CliUtils do
 
   @doc """
   Wraps a command in a shell script that will terminate
-  the command if stdin is closed. Useful for stopping
-  commands if the job runner is cancelled.
+  the command, and any processes it started, if stdin is
+  closed. Useful for stopping commands if the job runner
+  is cancelled.
 
   Delegates to `System.cmd/3` and any options/output
   are passed through. Custom options can be passed in.
@@ -56,8 +57,10 @@ defmodule Pinchflat.Utils.CliUtils do
   We want to satisfy the following behaviours:
     1. If the key is an atom, convert it to a string and convert it to kebab case (for convenience)
     2. If the key is a string, assume we want it as-is and don't convert it
-    3. If the key is accompanied by a value, append the value to the list
-    4. If the key is not accompanied by a value, assume it's a flag and PREpend it to the list
+    3. If the key is accompanied by a value, add the value (converted with `to_string/1`) after the key
+    4. If the key is not accompanied by a value, assume it's a flag and add it on its own
+
+  The options keep their order, including any repeated keys.
 
   Returns [binary()]
   """

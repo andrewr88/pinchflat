@@ -55,13 +55,18 @@ defmodule Pinchflat.Utils.NumberUtilsTest do
     end
 
     test "returns the number with jitter added" do
-      assert NumberUtils.add_jitter(100) in 100..150
+      assert NumberUtils.add_jitter(100) in 101..150
     end
 
     test "optionally takes a jitter percentage" do
-      assert NumberUtils.add_jitter(100, 0.1) in 90..110
-      assert NumberUtils.add_jitter(100, 0.5) in 50..150
-      assert NumberUtils.add_jitter(100, 1) in 0..200
+      assert NumberUtils.add_jitter(100, 0.1) in 101..110
+      assert NumberUtils.add_jitter(100, 0.5) in 101..150
+      assert NumberUtils.add_jitter(100, 1) in 101..200
+    end
+
+    test "always adds at least 1, even if the jitter percentage rounds it down to 0" do
+      assert NumberUtils.add_jitter(1, 0.1) == 2
+      assert NumberUtils.add_jitter(100, 0.001) == 101
     end
   end
 end

@@ -247,6 +247,18 @@ defmodule Pinchflat.Utils.FilesystemUtilsTest do
       refute File.exists?(directory)
     end
 
+    test "removes empty directories up to the directory, but not the directory itself" do
+      directory = Path.join(tmpfile_directory(), "delete_file_inside_directory-#{System.unique_integer([:positive])}")
+      filepath = Path.join([directory, "sub", "file.json"])
+      FilesystemUtils.write_p!(filepath, "")
+      on_exit(fn -> File.rm_rf(directory) end)
+
+      assert :ok = FilesystemUtils.delete_file_inside_directory(filepath, directory)
+
+      refute File.exists?(Path.join(directory, "sub"))
+      assert File.dir?(directory)
+    end
+
     test "doesn't delete a file outside the directory" do
       filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
       directory = Path.join(tmpfile_directory(), "delete_file_inside_directory")

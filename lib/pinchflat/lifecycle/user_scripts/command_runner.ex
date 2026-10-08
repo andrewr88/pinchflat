@@ -27,6 +27,12 @@ defmodule Pinchflat.Lifecycle.UserScripts.CommandRunner do
   If something fails, it'll be logged and returned BUT the tuple will always
   start with {:ok, ...}.
 
+  Exit codes from 1 to 125 come from the script itself (for `:media_pre_download`,
+  they veto the download). Higher ones mean the script couldn't run or finish:
+    - 126: the lifecycle file isn't executable
+    - 127: the lifecycle file or its interpreter (eg: from a bad shebang) wasn't found
+    - 128 and up: it was killed by a signal (128 + the signal's number, eg: 137 for SIGKILL)
+
   The only things that can cause a true failure are passing in an invalid event
   type or if the passed data cannot be encoded into JSON - both indicative of
   failures in the development process.
@@ -58,9 +64,19 @@ defmodule Pinchflat.Lifecycle.UserScripts.CommandRunner do
     raise ArgumentError, "Invalid event type: #{inspect(event_type)}"
   end
 
-  defp backend_executable do
+  @doc """
+  Returns the path of the user script command (the lifecycle file), whether it exists or not.
+
+  Returns binary()
+  """
+  def lifecycle_filepath do
     base_dir = Application.get_env(:pinchflat, :extras_directory)
-    filepath = Path.join([base_dir, "user-scripts", "lifecycle"])
+
+    Path.join([base_dir, "user-scripts", "lifecycle"])
+  end
+
+  defp backend_executable do
+    filepath = lifecycle_filepath()
 
     if FilesystemUtils.exists_and_nonempty?(filepath) do
       {:ok, filepath}

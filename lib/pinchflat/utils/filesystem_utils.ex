@@ -137,12 +137,13 @@ defmodule Pinchflat.Utils.FilesystemUtils do
   @doc """
   Deletes a file like `delete_file_and_remove_empty_directories/1`, but only if it's inside the
   given directory (see `inside_directory?/2`). A file anywhere else is left as-is and logged.
+  Empty directories are only removed inside the given directory, which is always kept.
 
   Returns :ok | {:error, :outside_directory} | {:error, any()}
   """
   def delete_file_inside_directory(filepath, directory) do
     if inside_directory?(filepath, directory) do
-      delete_file_and_remove_empty_directories(filepath)
+      delete_file_and_remove_empty_directories(filepath, directory)
     else
       Logger.warning("Not deleting #{inspect(filepath)} since it's outside #{inspect(directory)}")
 
@@ -157,26 +158,29 @@ defmodule Pinchflat.Utils.FilesystemUtils do
   Returns :ok | {:error, any()}
   """
   def delete_file_and_remove_empty_directories(filepath) do
+    delete_file_and_remove_empty_directories(filepath, nil)
+  end
+
+  # Empty directories are only removed inside the boundary directory, if there's one
+  defp delete_file_and_remove_empty_directories(filepath, boundary) do
     case File.rm(filepath) do
       :ok ->
         filepath
         |> Path.dirname()
-        |> recursively_delete_empty_directories()
+        |> recursively_delete_empty_directories(boundary)
 
       err ->
         err
     end
   end
 
-  defp recursively_delete_empty_directories(directory) do
-    case File.rmdir(directory) do
-      :ok ->
-        directory
-        |> Path.dirname()
-        |> recursively_delete_empty_directories()
+  defp recursively_delete_empty_directories(directory, boundary) do
+    removable = is_nil(boundary) or inside_directory?(directory, boundary)
 
-      err ->
-        err
+    if removable and File.rmdir(directory) == :ok do
+      directory
+      |> Path.dirname()
+      |> recursively_delete_empty_directories(boundary)
     end
 
     :ok
