@@ -65,9 +65,40 @@ defmodule Pinchflat.Boot.PreJobStartupTasks do
     {count, _} =
       Oban.Job
       |> where(state: "executing")
+      |> where([j], j.attempt < j.max_attempts)
       |> Repo.update_all(set: [state: "retryable"])
 
     Logger.info("Reset #{count} executing jobs")
+
+    discard_jobs_with_no_attempts_left()
+  end
+
+  # The job runner only runs jobs that have attempts left, so an executing job without any
+  # would be stuck if it were reset (as older versions did) and would stop a unique job like it
+  # being queued (eg: a source's next directory update). It's discarded instead, like a job
+  # that fails on its last attempt
+  defp discard_jobs_with_no_attempts_left do
+    now = DateTime.utc_now()
+
+    jobs =
+      Oban.Job
+      |> where([j], j.state in ["executing", "available", "scheduled", "retryable"])
+      |> where([j], j.attempt >= j.max_attempts)
+      |> Repo.all()
+
+    Enum.each(jobs, fn job ->
+      error = %{
+        attempt: job.attempt,
+        at: now,
+        error: "The app stopped while this job was running, with no attempts left"
+      }
+
+      job
+      |> Ecto.Changeset.change(state: "discarded", discarded_at: now, errors: job.errors ++ [error])
+      |> Repo.update!()
+    end)
+
+    Logger.info("Discarded #{length(jobs)} interrupted jobs with no attempts left")
   end
 
   defp create_blank_yt_dlp_files do

@@ -98,6 +98,12 @@ defmodule Pinchflat.Metadata.MetadataFileHelpers do
   Used for determining where to store things like NFO data and banners
   for media center apps. Not useful without a media center app.
 
+  Only the folders below the media directory are looked at, and the season folder
+  is the one closest to the media file. The series directory is never the media
+  directory itself, since other sources' files are there too: a "season" folder
+  right below it is a source's own folder that's named like one (eg: a playlist
+  called "Season 2").
+
   Returns {:ok, binary()} | {:error, :indeterminable}
   """
   def series_directory_from_media_filepath(media_filepath) do
@@ -108,22 +114,14 @@ defmodule Pinchflat.Metadata.MetadataFileHelpers do
     # Example matches: s1, s.1, s01 season 1, Season.01, Season_1, Season 1, Season1
     # Example non-matches: s01e01, season, series 1,
     season_regex = ~r/^s(eason)?(\W|_)?\d{1,}$/i
+    media_directory_parts = Path.split(Path.expand(Application.get_env(:pinchflat, :media_directory)))
+    filepath_parts = Path.split(Path.expand(media_filepath))
 
-    {series_directory, found_series_directory} =
-      media_filepath
-      |> Path.split()
-      |> Enum.reduce_while({[], false}, fn part, {directory_acc, _} ->
-        if String.match?(part, season_regex) do
-          {:halt, {directory_acc, true}}
-        else
-          {:cont, {directory_acc ++ [part], false}}
-        end
-      end)
-
-    if found_series_directory do
-      {:ok, Path.join(series_directory)}
+    with {^media_directory_parts, parts_below} <- Enum.split(filepath_parts, length(media_directory_parts)),
+         season_index when is_integer(season_index) and season_index > 0 <- last_index(parts_below, season_regex) do
+      {:ok, Path.join(media_directory_parts ++ Enum.take(parts_below, season_index))}
     else
-      {:error, :indeterminable}
+      _ -> {:error, :indeterminable}
     end
   end
 
@@ -140,6 +138,14 @@ defmodule Pinchflat.Metadata.MetadataFileHelpers do
       [[_, season, episode] | _] -> {:ok, {season, episode}}
       _ -> {:error, :indeterminable}
     end
+  end
+
+  # Returns the index of the last part matching the regex, or nil if none does
+  defp last_index(parts, regex) do
+    parts
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.find_value(fn {part, index} -> if String.match?(part, regex), do: index end)
   end
 
   defp generate_filepath_for(database_record, filename) do

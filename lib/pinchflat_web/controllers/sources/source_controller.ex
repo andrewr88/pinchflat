@@ -14,6 +14,24 @@ defmodule PinchflatWeb.Sources.SourceController do
   alias Pinchflat.Sources.SourceDirectoryUpdateWorker
   alias Pinchflat.Metadata.SourceMetadataStorageWorker
 
+  # Only the source form's fields are taken from the request. The app sets the others itself,
+  # eg: the paths of the files it writes, which it serves and later moves or deletes
+  @form_fields ~w(
+    original_url
+    custom_name
+    media_profile_id
+    index_frequency_minutes
+    fast_index
+    download_media
+    cookie_behaviour
+    min_duration_seconds
+    max_duration_seconds
+    download_cutoff_date
+    retention_period_days
+    title_filter_regex
+    output_path_template_override
+  )
+
   def index(conn, _params) do
     render(conn, :index)
   end
@@ -49,7 +67,7 @@ defmodule PinchflatWeb.Sources.SourceController do
   end
 
   def create(conn, %{"source" => source_params}) do
-    case Sources.create_source(source_params) do
+    case Sources.create_source(Map.take(source_params, @form_fields)) do
       {:ok, source} ->
         redirect_location =
           if Settings.get!(:onboarding), do: ~p"/?onboarding=1", else: ~p"/sources/#{source}"
@@ -92,7 +110,7 @@ defmodule PinchflatWeb.Sources.SourceController do
   def update(conn, %{"id" => id, "source" => source_params}) do
     source = Sources.get_source!(id)
 
-    case Sources.update_source(source, source_params) do
+    case Sources.update_source(source, Map.take(source_params, @form_fields)) do
       {:ok, source} ->
         conn
         |> put_flash(:info, "Source updated successfully.")

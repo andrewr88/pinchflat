@@ -3,9 +3,12 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
 
   import ExUnit.CaptureLog
   import Pinchflat.JobFixtures
+  import Pinchflat.SourcesFixtures
 
   alias Pinchflat.Settings
   alias Pinchflat.Boot.PreJobStartupTasks
+  alias Pinchflat.JobFixtures.TestJobWorker
+  alias Pinchflat.Sources.SourceDirectoryUpdateWorker
 
   setup do
     stub(YtDlpRunnerMock, :version, fn -> {:ok, "1"} end)
@@ -38,6 +41,46 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
       PreJobStartupTasks.init(%{})
 
       assert Repo.reload!(job).state == "retryable"
+    end
+
+    # The job runner only runs jobs with attempts left, so a retryable one would be stuck forever
+    test "discards executing jobs that have no attempts left" do
+      job = job_fixture_in_state("executing", attempt: 1, max_attempts: 1)
+
+      PreJobStartupTasks.init(%{})
+
+      job = Repo.reload!(job)
+      assert job.state == "discarded"
+      assert job.discarded_at
+      assert [%{"attempt" => 1, "error" => error}] = job.errors
+      assert error =~ "app stopped while this job was running"
+    end
+
+    test "discards jobs an earlier restart left stuck with no attempts left" do
+      job = job_fixture_in_state("available", attempt: 1, max_attempts: 1)
+
+      PreJobStartupTasks.init(%{})
+
+      assert Repo.reload!(job).state == "discarded"
+    end
+
+    test "leaves jobs that haven't run alone" do
+      job = job_fixture_in_state("available", attempt: 0, max_attempts: 1)
+
+      PreJobStartupTasks.init(%{})
+
+      assert Repo.reload!(job).state == "available"
+    end
+
+    # It's only attempted once, and only one directory update per source can be queued or running
+    test "lets a source's directory update that was running be queued again" do
+      source = source_fixture()
+      {:ok, task} = SourceDirectoryUpdateWorker.kickoff_with_task(source)
+      Repo.update_all(where(Oban.Job, id: ^task.job_id), set: [state: "executing", attempt: 1])
+
+      PreJobStartupTasks.init(%{})
+
+      assert {:ok, _} = SourceDirectoryUpdateWorker.kickoff_with_task(source)
     end
   end
 
@@ -173,5 +216,12 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
 
       PreJobStartupTasks.init(%{})
     end
+  end
+
+  defp job_fixture_in_state(state, attempt: attempt, max_attempts: max_attempts) do
+    {:ok, job} = Oban.insert(TestJobWorker.new(%{}, max_attempts: max_attempts))
+    Repo.update_all(where(Oban.Job, id: ^job.id), set: [state: state, attempt: attempt])
+
+    job
   end
 end

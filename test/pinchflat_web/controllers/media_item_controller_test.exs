@@ -4,6 +4,8 @@ defmodule PinchflatWeb.MediaItemControllerTest do
   import Pinchflat.MediaFixtures
 
   alias Pinchflat.Repo
+  alias Pinchflat.Media.MediaItem
+  alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Downloading.MediaDownloadWorker
 
   describe "show media" do
@@ -37,19 +39,50 @@ defmodule PinchflatWeb.MediaItemControllerTest do
     setup [:create_media_item]
 
     test "redirects when data is valid", %{conn: conn, media_item: media_item} do
-      update_attrs = %{title: "New Title"}
+      update_attrs = %{prevent_download: true}
 
       conn = put(conn, ~p"/sources/#{media_item.source_id}/media/#{media_item}", media_item: update_attrs)
       assert redirected_to(conn) == ~p"/sources/#{media_item.source_id}/media/#{media_item}"
-
-      conn = get(conn, ~p"/sources/#{media_item.source_id}/media/#{media_item}")
-      assert html_response(conn, 200) =~ update_attrs[:title]
+      assert Repo.reload!(media_item).prevent_download
     end
 
     test "renders errors when data is invalid", %{conn: conn, media_item: media_item} do
-      conn = put(conn, ~p"/sources/#{media_item.source_id}/media/#{media_item}", media_item: %{title: nil})
+      conn =
+        put(conn, ~p"/sources/#{media_item.source_id}/media/#{media_item}", media_item: %{prevent_download: "maybe"})
 
       assert html_response(conn, 200) =~ "Editing"
+    end
+
+    test "saves each field on the form", %{conn: conn, media_item: media_item} do
+      form_params = %{"prevent_download" => "true", "prevent_culling" => "true"}
+
+      # Fails when a field is added to the form, as a reminder to make sure it can be saved
+      edit_html = conn |> get(~p"/sources/#{media_item.source_id}/media/#{media_item}/edit") |> html_response(200)
+      assert form_field_names(edit_html, "media_item") == Enum.sort(Map.keys(form_params))
+
+      put(conn, ~p"/sources/#{media_item.source_id}/media/#{media_item}", media_item: form_params)
+
+      assert %MediaItem{prevent_download: true, prevent_culling: true} = Repo.reload!(media_item)
+    end
+
+    # The app serves the files at these paths (some publicly, eg: streaming) and deletes them along with the media item
+    test "doesn't set the media item's file paths from the request", %{conn: conn, media_item: media_item} do
+      filepath = FilesystemUtils.generate_metadata_tmpfile(:txt)
+
+      params =
+        MediaItem.filepath_attributes()
+        |> Map.new(&{to_string(&1), filepath})
+        |> Map.put("subtitle_filepaths", [["en", filepath]])
+        |> Map.put("prevent_download", "true")
+
+      put(conn, ~p"/sources/#{media_item.source_id}/media/#{media_item}", media_item: params)
+
+      updated_media_item = Repo.reload!(media_item)
+
+      assert updated_media_item.prevent_download
+
+      assert Map.take(updated_media_item, MediaItem.filepath_attributes()) ==
+               Map.take(media_item, MediaItem.filepath_attributes())
     end
   end
 
@@ -361,6 +394,15 @@ defmodule PinchflatWeb.MediaItemControllerTest do
   defp create_media_item(_) do
     media_item = media_item_fixture()
     %{media_item: media_item}
+  end
+
+  # The fields of a form's inputs, eg: "prevent_download" for `name="media_item[prevent_download]"`
+  defp form_field_names(html, param_name) do
+    ~r/name="#{param_name}\[(\w+)\]"/
+    |> Regex.scan(html, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp stream_with_range(media_item, range) do

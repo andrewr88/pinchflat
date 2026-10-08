@@ -7,6 +7,7 @@ defmodule PinchflatWeb.Sources.SourceLive.IndexTableLiveTest do
   import Pinchflat.ProfilesFixtures
 
   alias Pinchflat.Sources.Source
+  alias Pinchflat.Utils.FilesystemUtils
   alias PinchflatWeb.Sources.SourceLive.IndexTableLive
 
   describe "initial rendering" do
@@ -139,6 +140,19 @@ defmodule PinchflatWeb.Sources.SourceLive.IndexTableLiveTest do
       |> render_change(%{source: %{"enabled" => false}})
 
       assert %{enabled: false} = Repo.get!(Source, source.id)
+    end
+
+    test "doesn't change any other field", %{conn: conn} do
+      source = source_fixture(enabled: true)
+      {:ok, view, _html} = live_isolated(conn, IndexTableLive, session: create_session())
+      filepath = FilesystemUtils.generate_metadata_tmpfile(:nfo)
+
+      view
+      |> element(".enabled_toggle_form")
+      |> render_change(%{source: %{"enabled" => false, "nfo_filepath" => filepath, "custom_name" => "New name"}})
+
+      assert %{enabled: false, nfo_filepath: nil, custom_name: custom_name} = Repo.get!(Source, source.id)
+      assert custom_name == source.custom_name
     end
   end
 

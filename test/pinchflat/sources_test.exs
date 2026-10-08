@@ -8,6 +8,7 @@ defmodule Pinchflat.SourcesTest do
 
   alias Pinchflat.Sources
   alias Pinchflat.Sources.Source
+  alias Pinchflat.Media.MediaItem
   alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Metadata.MetadataFileHelpers
   alias Pinchflat.Downloading.DownloadingHelpers
@@ -766,6 +767,24 @@ defmodule Pinchflat.SourcesTest do
       assert {:ok, %Source{}} = Sources.update_source(source, update_attrs)
       refute_enqueued(worker: MediaCollectionIndexingWorker)
     end
+
+    test "updating the index frequency to 0 will cancel an indexing job that's running" do
+      source = source_fixture()
+      job = executing_job_fixture(source, MediaCollectionIndexingWorker)
+
+      assert {:ok, %Source{}} = Sources.update_source(source, %{index_frequency_minutes: 0})
+
+      assert Repo.reload!(job).state == "cancelled"
+    end
+
+    test "disabling a source will cancel an indexing job that's running" do
+      source = source_fixture()
+      job = executing_job_fixture(source, MediaCollectionIndexingWorker)
+
+      assert {:ok, %Source{}} = Sources.update_source(source, %{enabled: false})
+
+      assert Repo.reload!(job).state == "cancelled"
+    end
   end
 
   describe "update_source/3 when testing fast indexing" do
@@ -844,6 +863,24 @@ defmodule Pinchflat.SourcesTest do
       refute_enqueued(worker: FastIndexingWorker)
       assert {:ok, %Source{}} = Sources.update_source(source, update_attrs)
       refute_enqueued(worker: FastIndexingWorker)
+    end
+
+    test "disabling fast_index will cancel a fast indexing job that's running" do
+      source = source_fixture(fast_index: true)
+      job = executing_job_fixture(source, FastIndexingWorker)
+
+      assert {:ok, %Source{}} = Sources.update_source(source, %{fast_index: false})
+
+      assert Repo.reload!(job).state == "cancelled"
+    end
+
+    test "disabling a source will cancel a fast indexing job that's running" do
+      source = source_fixture(fast_index: true)
+      job = executing_job_fixture(source, FastIndexingWorker)
+
+      assert {:ok, %Source{}} = Sources.update_source(source, %{enabled: false})
+
+      assert Repo.reload!(job).state == "cancelled"
     end
   end
 
@@ -989,6 +1026,66 @@ defmodule Pinchflat.SourcesTest do
       assert {:ok, _} = Sources.delete_source(source, delete_files: true)
 
       refute File.exists?(filepath)
+    end
+
+    test "deletes the source's images, NFO and metadata files, and its series directory once it's empty" do
+      suffix = :rand.uniform(1_000_000)
+      series_directory = Path.join([Application.get_env(:pinchflat, :media_directory), "shows", "Show #{suffix}"])
+      metadata_directory = Path.join([Application.get_env(:pinchflat, :metadata_directory), "sources", "#{suffix}"])
+
+      source_filepaths = %{
+        nfo_filepath: Path.join(series_directory, "tvshow.nfo"),
+        poster_filepath: Path.join(series_directory, "poster.jpg"),
+        fanart_filepath: Path.join(series_directory, "fanart.jpg"),
+        banner_filepath: Path.join(series_directory, "banner.jpg")
+      }
+
+      metadata_filepaths = %{
+        metadata_filepath: Path.join(metadata_directory, "metadata.json.gz"),
+        poster_filepath: Path.join(metadata_directory, "poster.jpg"),
+        fanart_filepath: Path.join(metadata_directory, "fanart.jpg"),
+        banner_filepath: Path.join(metadata_directory, "banner.jpg")
+      }
+
+      source =
+        source_fixture(Map.merge(source_filepaths, %{series_directory: series_directory, metadata: metadata_filepaths}))
+
+      media_item =
+        media_item_fixture(source_id: source.id, media_filepath: Path.join(series_directory, "Season 1/s01e01.mp4"))
+
+      filepaths = [media_item.media_filepath | Map.values(source_filepaths) ++ Map.values(metadata_filepaths)]
+      Enum.each(filepaths, &FilesystemUtils.write_p!(&1, "contents"))
+
+      assert {:ok, _} = Sources.delete_source(source, delete_files: true)
+
+      Enum.each(filepaths, fn filepath -> refute File.exists?(filepath) end)
+      refute File.exists?(series_directory)
+    end
+
+    # The media items are loaded together but deleted one by one, so a download can finish in between
+    test "deletes the files of a media item downloaded while its source is being deleted" do
+      source = source_fixture()
+      media_item_fixture(source_id: source.id, media_filepath: nil)
+      media_item_fixture(source_id: source.id, media_filepath: nil)
+
+      downloaded_filepath =
+        Path.join([Application.get_env(:pinchflat, :media_directory), "dl", "#{:rand.uniform(1_000_000)}.mp4"])
+
+      FilesystemUtils.write_p!(downloaded_filepath, "media")
+
+      # Runs after each media item's files are deleted, so the other one finishes downloading
+      # after the first one is deleted
+      expect(UserScriptRunnerMock, :run, 2, fn :media_deleted, deleted_media_item ->
+        MediaItem
+        |> where([m], m.source_id == ^source.id and m.id != ^deleted_media_item.id)
+        |> Repo.update_all(set: [media_filepath: downloaded_filepath])
+
+        {:ok, "", 0}
+      end)
+
+      assert {:ok, _} = Sources.delete_source(source, delete_files: true)
+
+      refute File.exists?(downloaded_filepath)
     end
   end
 
@@ -1552,6 +1649,62 @@ defmodule Pinchflat.SourcesTest do
       assert Repo.reload!(media_item).predicted_media_filepath ==
                Path.join(new_dir, "Season 2025/s2025e122000 - Episode.mp4")
     end
+
+    test "leaves a media item that hasn't been downloaded alone, without running yt-dlp for it" do
+      %{source: source, media_item: media_item, new_dir: new_dir} = source_with_files_to_move()
+      path_fields = [:predicted_media_filepath | MediaItem.filepath_attributes()]
+
+      pending_media_item =
+        %{source_id: source.id, media_id: "pending", media_filepath: nil}
+        |> media_item_fixture()
+        |> store_info_json()
+
+      expect_series_directory_lookup(new_dir)
+      # Only expects the downloaded media item
+      expect_episode_output_filepath(new_dir)
+
+      assert {:ok, _} = Sources.update_source_directory(source)
+
+      assert Repo.reload!(media_item).media_filepath == Path.join(new_dir, "Season 2025/s2025e122000 - Episode.mp4")
+      assert Map.take(Repo.reload!(pending_media_item), path_fields) == Map.take(pending_media_item, path_fields)
+    end
+
+    # eg: only the case of the source's name changes, on a case-insensitive filesystem. A hard link
+    # to the old file stands in for that here, since it's the same file too
+    test "renames a file whose new path is already the same file" do
+      %{source: source, media_item: media_item, old_dir: old_dir, new_dir: new_dir} = source_with_files_to_move()
+      new_media_filepath = Path.join(new_dir, "Season 2025/s2025e122000 - Episode.mp4")
+      File.mkdir_p!(Path.dirname(new_media_filepath))
+      File.ln!(media_item.media_filepath, new_media_filepath)
+
+      expect_series_directory_lookup(new_dir)
+      expect_episode_output_filepath(new_dir)
+
+      assert {:ok, _} = Sources.update_source_directory(source)
+
+      assert Repo.reload!(media_item).media_filepath == new_media_filepath
+      assert File.read!(new_media_filepath) == "contents of #{media_item.media_filepath}"
+      # Nothing's left in the old season folder, not even a temporary file
+      assert File.ls!(Path.join(old_dir, "Season 2025")) == []
+    end
+
+    test "doesn't move a symlink onto the file it links to" do
+      %{source: source, media_item: media_item, new_dir: new_dir} = source_with_files_to_move()
+      new_media_filepath = Path.join(new_dir, "Season 2025/s2025e122000 - Episode.mp4")
+      FilesystemUtils.write_p!(new_media_filepath, "the file")
+      File.rm!(media_item.media_filepath)
+      File.ln_s!(new_media_filepath, media_item.media_filepath)
+
+      expect_series_directory_lookup(new_dir)
+      expect_episode_output_filepath(new_dir)
+
+      assert {:error, changeset} = Sources.update_source_directory(source)
+      assert [file_operations: {message, _}] = changeset.errors
+      assert message =~ ":destination_exists"
+
+      assert File.read!(new_media_filepath) == "the file"
+      assert File.read!(media_item.media_filepath) == "the file"
+    end
   end
 
   describe "change_source/3 when testing original_url validation" do
@@ -1758,6 +1911,15 @@ defmodule Pinchflat.SourcesTest do
       "%(upload_date>%Y-%m-%d)S %(title)S",
       "%(title)S [%(id)S].%(ext)S"
     ])
+  end
+
+  # A job for the source, with a task, as if it were running
+  defp executing_job_fixture(source, worker) do
+    {:ok, job} = Oban.insert(worker.new(%{"id" => source.id}))
+    task_fixture(source_id: source.id, job_id: job.id)
+    Repo.update_all(where(Oban.Job, id: ^job.id), set: [state: "executing"])
+
+    job
   end
 
   defp regular_files_in(directory) do

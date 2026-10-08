@@ -13,6 +13,7 @@ defmodule Pinchflat.Sources do
   alias Pinchflat.Tasks
   alias Pinchflat.Sources.Source
   alias Pinchflat.Profiles.MediaProfile
+  alias Pinchflat.Utils.StringUtils
   alias Pinchflat.YtDlp.MediaCollection
   alias Pinchflat.Metadata.SourceMetadata
   alias Pinchflat.Utils.FilesystemUtils
@@ -145,11 +146,21 @@ defmodule Pinchflat.Sources do
     delete_files = Keyword.get(opts, :delete_files, false)
     Tasks.delete_tasks_for(source)
 
-    MediaQuery.new()
-    |> where(^MediaQuery.for_source(source))
-    |> Repo.all()
-    |> Enum.each(fn media_item ->
-      Media.delete_media_item(media_item, delete_files: delete_files)
+    media_items =
+      MediaQuery.new()
+      |> where(^MediaQuery.for_source(source))
+      |> Repo.all()
+
+    # A download that finishes after the media items are loaded writes paths their loaded copies
+    # don't have, which would leave its files behind. So the downloads are stopped before anything
+    # is deleted, and each media item is reloaded before it's deleted
+    Enum.each(media_items, &Tasks.delete_tasks_for/1)
+
+    Enum.each(media_items, fn media_item ->
+      case Repo.reload(media_item) do
+        nil -> :ok
+        reloaded_media_item -> Media.delete_media_item(reloaded_media_item, delete_files: delete_files)
+      end
     end)
 
     if delete_files do
@@ -189,7 +200,8 @@ defmodule Pinchflat.Sources do
      Files move whatever the media profile's download options are now: they may have
      been downloaded before an option was turned off.
      A move never overwrites an existing file. Files that don't exist are skipped,
-     but their paths are still updated
+     but their paths are still updated. A file whose new path is already the same file
+     (e.g. only the case changes, on a case-insensitive filesystem) is renamed instead
   5. Update all path fields in one database transaction
 
   If a move or the database update fails, the moves already made are undone in reverse
@@ -631,8 +643,50 @@ defmodule Pinchflat.Sources do
          {:ok, %File.Stat{size: size}} <- File.stat(old_path) do
       copy_verify_delete(old_path, new_path, size)
     else
-      true -> {:error, :destination_exists}
+      true -> move_onto_existing_path(old_path, new_path)
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # An existing file at the new path is only moved onto if it's the file itself: on a
+  # case-insensitive filesystem, a new path that only changes the case of the old one already
+  # exists. That's renamed instead, since copying a file onto itself would destroy it
+  defp move_onto_existing_path(old_path, new_path) do
+    if same_file?(old_path, new_path) do
+      rename_same_file(old_path, new_path)
+    else
+      {:error, :destination_exists}
+    end
+  end
+
+  # Compares the paths' own entries, so a symlink isn't the same file as its target (renaming
+  # one onto its target would replace the file with the link)
+  defp same_file?(path_1, path_2) do
+    with {:ok, stat_1} <- File.lstat(path_1),
+         {:ok, stat_2} <- File.lstat(path_2) do
+      {stat_1.major_device, stat_1.minor_device, stat_1.inode} ==
+        {stat_2.major_device, stat_2.minor_device, stat_2.inode}
+    else
+      _ -> false
+    end
+  end
+
+  # Renames through a temporary name in the same directory, since some filesystems ignore a
+  # rename that only changes the case. When the paths are separate links to the file (eg: hard
+  # links), the second rename does nothing, so the temporary name is removed afterwards
+  defp rename_same_file(old_path, new_path) do
+    tmp_path = Path.join(Path.dirname(old_path), ".pinchflat-rename-#{StringUtils.random_string(16)}")
+
+    with :ok <- File.rename(old_path, tmp_path) do
+      case File.rename(tmp_path, new_path) do
+        :ok ->
+          File.rm(tmp_path)
+          :ok
+
+        {:error, reason} ->
+          File.rename(tmp_path, old_path)
+          {:error, reason}
+      end
     end
   end
 

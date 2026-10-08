@@ -8,6 +8,10 @@ defmodule PinchflatWeb.MediaItems.MediaItemController do
   alias Pinchflat.Media.MediaItem
   alias Pinchflat.Downloading.MediaDownloadWorker
 
+  # Only the media item form's fields are taken from the request. The app sets the others itself,
+  # eg: the paths of the media's files, which it serves (some publicly) and deletes
+  @form_fields ~w(prevent_download prevent_culling)
+
   def show(conn, %{"id" => id}) do
     media_item =
       id
@@ -27,7 +31,7 @@ defmodule PinchflatWeb.MediaItems.MediaItemController do
   def update(conn, %{"id" => id, "media_item" => params}) do
     media_item = Media.get_media_item!(id)
 
-    case Media.update_media_item(media_item, params) do
+    case Media.update_media_item(media_item, Map.take(params, @form_fields)) do
       {:ok, media_item} ->
         conn
         |> put_flash(:info, "Media Item updated successfully.")

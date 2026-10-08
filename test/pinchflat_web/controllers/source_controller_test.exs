@@ -7,12 +7,16 @@ defmodule PinchflatWeb.SourceControllerTest do
 
   alias Pinchflat.Repo
   alias Pinchflat.Settings
+  alias Pinchflat.Sources.Source
+  alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Media.FileSyncingWorker
   alias Pinchflat.Sources.SourceDeletionWorker
   alias Pinchflat.Downloading.MediaDownloadWorker
   alias Pinchflat.Sources.SourceDirectoryUpdateWorker
   alias Pinchflat.Metadata.SourceMetadataStorageWorker
   alias Pinchflat.SlowIndexing.MediaCollectionIndexingWorker
+
+  @source_path_fields ~w(series_directory nfo_filepath poster_filepath fanart_filepath banner_filepath)a
 
   setup do
     media_profile = media_profile_fixture()
@@ -106,6 +110,17 @@ defmodule PinchflatWeb.SourceControllerTest do
       conn = post(conn, ~p"/sources", source: invalid_attrs)
 
       refute html_response(conn, 200) =~ "MENU"
+    end
+
+    test "doesn't set the source's file paths from the request", %{conn: conn, create_attrs: create_attrs} do
+      expect(YtDlpRunnerMock, :run, 1, &runner_function_mock/5)
+
+      conn = post(conn, ~p"/sources", source: Map.merge(create_attrs, file_path_params()))
+
+      assert %{id: id} = redirected_params(conn)
+      source = Repo.get!(Source, id)
+
+      assert Map.take(source, @source_path_fields) == Map.new(@source_path_fields, &{&1, nil})
     end
   end
 
@@ -202,6 +217,60 @@ defmodule PinchflatWeb.SourceControllerTest do
     } do
       conn = put(conn, ~p"/sources/#{source}", source: invalid_attrs)
       assert html_response(conn, 200) =~ "Editing \"#{source.custom_name}\""
+    end
+
+    test "saves each field on the form", %{conn: conn} do
+      expect(YtDlpRunnerMock, :run, 1, &runner_function_mock/5)
+      source = source_fixture(fast_index: true)
+      %{id: media_profile_id} = media_profile_fixture()
+
+      form_params = %{
+        "original_url" => "https://www.youtube.com/source/321xyz",
+        "custom_name" => "New name",
+        "media_profile_id" => to_string(media_profile_id),
+        "index_frequency_minutes" => "120",
+        "fast_index" => "false",
+        "download_media" => "false",
+        "cookie_behaviour" => "all_operations",
+        "min_duration_seconds" => "10",
+        "max_duration_seconds" => "1000",
+        "download_cutoff_date" => "2024-01-01",
+        "retention_period_days" => "7",
+        "title_filter_regex" => "(?i)^How to Bike$",
+        "output_path_template_override" => "/{{ title }}.{{ ext }}"
+      }
+
+      # Fails when a field is added to the form, as a reminder to make sure it can be saved
+      edit_html = conn |> get(~p"/sources/#{source}/edit") |> html_response(200)
+      assert form_field_names(edit_html, "source") == Enum.sort(Map.keys(form_params))
+
+      put(conn, ~p"/sources/#{source}", source: form_params)
+
+      assert %Source{
+               original_url: "https://www.youtube.com/source/321xyz",
+               custom_name: "New name",
+               media_profile_id: ^media_profile_id,
+               index_frequency_minutes: 120,
+               fast_index: false,
+               download_media: false,
+               cookie_behaviour: :all_operations,
+               min_duration_seconds: 10,
+               max_duration_seconds: 1000,
+               download_cutoff_date: ~D[2024-01-01],
+               retention_period_days: 7,
+               title_filter_regex: "(?i)^How to Bike$",
+               output_path_template_override: "/{{ title }}.{{ ext }}"
+             } = Repo.reload!(source)
+    end
+
+    # The app serves the files at these paths, and moves or deletes them along with the source
+    test "doesn't set the source's file paths from the request", %{conn: conn, source: source} do
+      put(conn, ~p"/sources/#{source}", source: Map.put(file_path_params(), "custom_name", "New name"))
+
+      updated_source = Repo.reload!(source)
+
+      assert updated_source.custom_name == "New name"
+      assert Map.take(updated_source, @source_path_fields) == Map.take(source, @source_path_fields)
     end
   end
 
@@ -370,6 +439,24 @@ defmodule PinchflatWeb.SourceControllerTest do
     media_item = media_item_with_attachments(%{source_id: source.id})
 
     %{source: source, media_item: media_item}
+  end
+
+  # Points the source's file paths at a file outside the media directory
+  defp file_path_params do
+    filepath = FilesystemUtils.generate_metadata_tmpfile(:txt)
+
+    @source_path_fields
+    |> Map.new(&{to_string(&1), filepath})
+    |> Map.put("series_directory", Path.dirname(filepath))
+  end
+
+  # The fields of a form's inputs, eg: "custom_name" for `name="source[custom_name]"`
+  defp form_field_names(html, param_name) do
+    ~r/name="#{param_name}\[(\w+)\]"/
+    |> Regex.scan(html, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp runner_function_mock(_url, :get_source_details, _opts, _ot, _addl) do

@@ -25,10 +25,12 @@ defmodule PinchflatWeb.Sources.SourceLive.SourceEnableToggle do
     |> then(&{:ok, &1})
   end
 
+  # The toggle only sets `enabled`, so nothing else is taken from the event. Other fields are set
+  # elsewhere, and some are the paths of files the app serves and later moves or deletes
   def handle_event("update", %{"source" => source_params}, %{assigns: assigns} = socket) do
     assigns.source_id
     |> Sources.get_source!()
-    |> Sources.update_source(source_params)
+    |> Sources.update_source(Map.take(source_params, ["enabled"]))
 
     {:noreply, socket}
   end

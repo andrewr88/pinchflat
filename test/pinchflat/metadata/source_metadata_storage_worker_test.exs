@@ -136,7 +136,7 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorkerTest do
     test "downloads and stores source images" do
       stub(YtDlpRunnerMock, :run, fn
         _url, :get_source_details, _opts, _ot, _addl ->
-          filename = Path.join([Application.get_env(:pinchflat, :media_directory), "Season 1", "bar.mp4"])
+          filename = Path.join([Application.get_env(:pinchflat, :media_directory), "show", "Season 1", "bar.mp4"])
 
           {:ok, source_details_return_fixture(%{filename: filename})}
 
@@ -202,7 +202,7 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorkerTest do
     test "does not store source images if the profile is not set to" do
       stub(YtDlpRunnerMock, :run, fn
         _url, :get_source_details, _opts, _ot, _addl ->
-          filename = Path.join([Application.get_env(:pinchflat, :media_directory), "Season 1", "bar.mp4"])
+          filename = Path.join([Application.get_env(:pinchflat, :media_directory), "show", "Season 1", "bar.mp4"])
 
           {:ok, source_details_return_fixture(%{filename: filename})}
 
@@ -296,7 +296,7 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorkerTest do
     test "sets the series directory based on the returned media filepath" do
       stub(YtDlpRunnerMock, :run, fn
         _url, :get_source_details, _opts, _ot, _addl ->
-          filename = Path.join([Application.get_env(:pinchflat, :media_directory), "Season 1", "bar.mp4"])
+          filename = Path.join([Application.get_env(:pinchflat, :media_directory), "show", "Season 1", "bar.mp4"])
 
           {:ok, source_details_return_fixture(%{filename: filename})}
 
@@ -376,7 +376,7 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorkerTest do
     test "stores the NFO if specified" do
       stub(YtDlpRunnerMock, :run, fn
         _url, :get_source_details, _opts, _ot, _addl ->
-          filename = Path.join([Application.get_env(:pinchflat, :media_directory), "Season 1", "bar.mp4"])
+          filename = Path.join([Application.get_env(:pinchflat, :media_directory), "show", "Season 1", "bar.mp4"])
 
           {:ok, source_details_return_fixture(%{filename: filename})}
 
@@ -399,7 +399,7 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorkerTest do
     test "does not store the NFO if not specified" do
       stub(YtDlpRunnerMock, :run, fn
         _url, :get_source_details, _opts, _ot, _addl ->
-          filename = Path.join([Application.get_env(:pinchflat, :media_directory), "Season 1", "bar.mp4"])
+          filename = Path.join([Application.get_env(:pinchflat, :media_directory), "show", "Season 1", "bar.mp4"])
 
           {:ok, source_details_return_fixture(%{filename: filename})}
 

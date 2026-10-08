@@ -162,8 +162,12 @@ defmodule Pinchflat.Metadata.MetadataFileHelpersTest do
         "/media/S.1/episode.mp4"
       ]
 
+      # Media paths are always in the media directory
+      media_directory = Application.get_env(:pinchflat, :media_directory)
+
       for filepath <- good_filepaths do
-        assert {:ok, "/media"} = Helpers.series_directory_from_media_filepath(filepath)
+        assert {:ok, Path.join(media_directory, "media")} ==
+                 Helpers.series_directory_from_media_filepath(Path.join(media_directory, filepath))
       end
     end
 
@@ -185,7 +189,37 @@ defmodule Pinchflat.Metadata.MetadataFileHelpersTest do
         "/media/bar/"
       ]
 
+      media_directory = Application.get_env(:pinchflat, :media_directory)
+
       for filepath <- bad_filepaths do
+        assert {:error, :indeterminable} =
+                 Helpers.series_directory_from_media_filepath(Path.join(media_directory, filepath))
+      end
+    end
+
+    # A source's folder is named after it, and the name can look like a season (eg: a playlist called "Season 2")
+    test "never returns the media directory" do
+      media_directory = Application.get_env(:pinchflat, :media_directory)
+
+      for source_folder <- ["S1", "Season 2"] do
+        filepath = Path.join([media_directory, source_folder, "2024-01-01 T", "T [id].mp4"])
+
+        assert {:error, :indeterminable} = Helpers.series_directory_from_media_filepath(filepath)
+      end
+    end
+
+    test "uses the season folder closest to the media file" do
+      media_directory = Application.get_env(:pinchflat, :media_directory)
+      filepath = Path.join([media_directory, "shows", "Season 2", "Season 2024", "s2024e0101 - T.mp4"])
+
+      assert {:ok, Path.join([media_directory, "shows", "Season 2"])} ==
+               Helpers.series_directory_from_media_filepath(filepath)
+    end
+
+    test "returns an error for paths outside the media directory" do
+      media_directory = Application.get_env(:pinchflat, :media_directory)
+
+      for filepath <- ["/media/season1/episode.mp4", "#{media_directory}-other/show/season1/episode.mp4"] do
         assert {:error, :indeterminable} = Helpers.series_directory_from_media_filepath(filepath)
       end
     end
