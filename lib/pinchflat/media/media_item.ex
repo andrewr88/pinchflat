@@ -151,12 +151,13 @@ defmodule Pinchflat.Media.MediaItem do
   defp update_upload_date_index(%{changes: changes} = changeset) when is_map_key(changes, :uploaded_at) do
     old_uploaded_at = changeset.data.uploaded_at
     new_uploaded_at = get_change(changeset, :uploaded_at)
-    upload_dates_match = DateTime.to_date(old_uploaded_at) == DateTime.to_date(new_uploaded_at)
 
-    if upload_dates_match do
-      changeset
-    else
-      do_update_upload_date_index(changeset)
+    cond do
+      # There's no day to compare if either is missing. Leave the changeset as-is so
+      # `validate_required` rejects a removed `uploaded_at` instead of crashing here
+      is_nil(old_uploaded_at) or is_nil(new_uploaded_at) -> changeset
+      DateTime.to_date(old_uploaded_at) == DateTime.to_date(new_uploaded_at) -> changeset
+      true -> do_update_upload_date_index(changeset)
     end
   end
 

@@ -732,6 +732,21 @@ defmodule Pinchflat.MediaTest do
       assert {:error, %Ecto.Changeset{}} = Media.update_media_item(media_item, @invalid_attrs)
       assert media_item == Media.get_media_item!(media_item.id)
     end
+
+    test "removing uploaded_at returns an error changeset instead of raising" do
+      media_item = media_item_fixture()
+
+      assert {:error, %Ecto.Changeset{} = changeset} = Media.update_media_item(media_item, %{uploaded_at: nil})
+      assert "can't be blank" in errors_on(changeset).uploaded_at
+      assert media_item == Media.get_media_item!(media_item.id)
+    end
+
+    test "blanking uploaded_at from form params returns an error changeset instead of raising" do
+      media_item = media_item_fixture()
+
+      assert {:error, %Ecto.Changeset{} = changeset} = Media.update_media_item(media_item, %{"uploaded_at" => ""})
+      assert "can't be blank" in errors_on(changeset).uploaded_at
+    end
   end
 
   describe "delete_media_item/2" do
