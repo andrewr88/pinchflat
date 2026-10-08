@@ -199,7 +199,9 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
     additional_options_map = output_options_map(media_item_with_preloads)
     {:ok, output_path} = OutputPathBuilder.build(string, additional_options_map)
 
-    Path.join(base_directory(), output_path)
+    base_directory()
+    |> Path.join(output_path)
+    |> ensure_in_base_directory!()
   end
 
   defp output_options_map(media_item_with_preloads) do
@@ -209,13 +211,46 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
       "media_item_id" => to_string(media_item_with_preloads.id),
       "source_id" => to_string(source.id),
       "media_profile_id" => to_string(source.media_profile_id),
-      "source_custom_name" => source.custom_name,
-      "source_collection_id" => source.collection_id,
-      "source_collection_name" => source.collection_name,
+      "source_custom_name" => escape_source_name(source.custom_name),
+      "source_collection_id" => escape_source_name(source.collection_id),
+      "source_collection_name" => escape_source_name(source.collection_name),
       "source_collection_type" => to_string(source.collection_type),
       "media_playlist_index" => pad_int(media_item_with_preloads.playlist_index),
       "media_upload_date_index" => pad_int(media_item_with_preloads.upload_date_index)
     }
+  end
+
+  # These come from the channel or playlist's metadata (custom_name defaults to the
+  # collection name), so they're made safe to use as one literal path segment of the
+  # yt-dlp output template. Any other name is unchanged:
+  #   - `/` and `\` become the lookalikes yt-dlp itself uses for them in field values
+  #     (`⧸` U+29F8 and `⧹` U+29F9), so a name can't add or climb directory levels and
+  #     "AC/DC" gets the same folder name as `%(channel)S` would give it
+  #   - a name that's just `.` or `..` would be a relative path segment, so its dots become `_`
+  #   - `%` is doubled so yt-dlp writes it as-is instead of expanding e.g. `%(id)s` as a field
+  #     (yt-dlp already wrote a lone `%` as-is, so a name like "100% Real" keeps its path)
+  defp escape_source_name(name) when name in [".", ".."] do
+    String.replace(name, ".", "_")
+  end
+
+  defp escape_source_name(name) do
+    name
+    |> String.replace("/", "⧸")
+    |> String.replace("\\", "⧹")
+    |> String.replace("%", "%%")
+  end
+
+  # The final path must be inside the media directory, however the template and the names in
+  # it combine. Raises (like an unparseable template would) since every caller needs a path
+  defp ensure_in_base_directory!(output_path) do
+    # The trailing `/` stops a sibling like `/downloads-other` passing for `/downloads`
+    base_directory_prefix = String.trim_trailing(Path.expand(base_directory()), "/") <> "/"
+
+    if String.starts_with?(Path.expand(output_path), base_directory_prefix) do
+      output_path
+    else
+      raise "Output path #{inspect(output_path)} is outside the media directory #{inspect(base_directory())}"
+    end
   end
 
   # I don't love the string manipulation here, but what can ya' do.

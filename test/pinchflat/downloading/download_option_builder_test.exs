@@ -481,6 +481,52 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilderTest do
 
       assert path == "/tmp/test/media/override.%(ext)s"
     end
+
+    test "keeps source names from adding path segments or yt-dlp fields", %{media_item: media_item} do
+      template =
+        "/{{ source_custom_name }}/{{ source_collection_name }}/{{ source_collection_id }}/{{ title }}.{{ ext }}"
+
+      media_item = update_media_profile_attribute(media_item, %{output_path_template: template})
+
+      # These names come from the channel or playlist (custom_name defaults to the collection name)
+      cases = [
+        {"My Channel - Videos (2024)", "My Channel - Videos (2024)"},
+        {"../../etc/x", "..⧸..⧸etc⧸x"},
+        {"AC/DC", "AC⧸DC"},
+        {~S"C:\Windows", "C:⧹Windows"},
+        {"%(id)s", "%%(id)s"},
+        {"..", "__"},
+        {".", "_"}
+      ]
+
+      for {name, expected_segment} <- cases do
+        source = %{media_item.source | custom_name: name, collection_name: name, collection_id: name}
+
+        path = DownloadOptionBuilder.build_output_path_for(%{media_item | source: source})
+
+        assert path == "/tmp/test/media/#{expected_segment}/#{expected_segment}/#{expected_segment}/%(title)S.%(ext)S"
+      end
+    end
+
+    test "raises if the path would be outside the media directory", %{media_item: media_item} do
+      cases = [
+        {"/../{{ title }}.{{ ext }}", :raises},
+        {"/../media-other/{{ title }}.{{ ext }}", :raises},
+        {"/season/../{{ title }}.{{ ext }}", "/tmp/test/media/season/../%(title)S.%(ext)S"}
+      ]
+
+      for {template, expected} <- cases do
+        media_item = update_media_profile_attribute(media_item, %{output_path_template: template})
+
+        if expected == :raises do
+          assert_raise RuntimeError, ~r/outside the media directory/, fn ->
+            DownloadOptionBuilder.build_output_path_for(media_item)
+          end
+        else
+          assert DownloadOptionBuilder.build_output_path_for(media_item) == expected
+        end
+      end
+    end
   end
 
   describe "build_quality_options_for/1" do

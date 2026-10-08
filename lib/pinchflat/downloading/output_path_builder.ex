@@ -9,23 +9,28 @@ defmodule Pinchflat.Downloading.OutputPathBuilder do
   Builds the actual final filepath from a given template. Optionally, you can pass in
   a map of additional options to be used in the template.
 
-  Custom options are recursively expanded _once_ so you can nest custom options
-  one-deep if needed.
+  The built-in custom options are expanded _once_ so they can reference other options
+  one-deep (e.g. `media_upload_date_index`). The additional options' values are data,
+  not templates: they're inserted as-is, so `{{` in a name from remote metadata is kept
+  literally instead of being expanded or breaking the parse.
 
   Translates liquid-style templates into yt-dlp-style templates,
   leaving yt-dlp syntax intact.
   """
   def build(template_string, additional_template_options \\ %{}) do
-    combined_options = Map.merge(custom_yt_dlp_option_map(), additional_template_options)
+    custom_options = custom_yt_dlp_option_map()
+    combined_options = Map.merge(custom_options, additional_template_options)
 
-    expanded_options =
-      Enum.map(combined_options, fn {key, value} ->
+    expanded_custom_options =
+      Map.new(custom_options, fn {key, value} ->
         {:ok, parse_result} = TemplateParser.parse(value, combined_options, &identifier_fn/2)
 
         {key, parse_result}
       end)
 
-    TemplateParser.parse(template_string, Map.new(expanded_options), &identifier_fn/2)
+    template_options = Map.merge(expanded_custom_options, additional_template_options)
+
+    TemplateParser.parse(template_string, template_options, &identifier_fn/2)
   end
 
   # The `nil` case simply wraps the identifier in yt-dlp-style syntax. This assumes that

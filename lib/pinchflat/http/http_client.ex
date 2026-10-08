@@ -13,14 +13,14 @@ defmodule Pinchflat.HTTP.HTTPClient do
   @doc """
   Makes a GET request to the given URL and returns the response.
 
-  NOTE: I can't really test this with Mox and I can't think of a way to test this
-  that isn't ultimately redundant. I'm just going to leave it untested for now and
-  focus more on testing the consumers of this module.
+  NOTE: this can't be tested with Mox, so its test talks to a local socket. Its
+  consumers are tested with the Mox mock instead.
 
   Additional Opts:
     - :http_options - HTTP options for `:httpc.request/4`, such as `:timeout` and
       `:connect_timeout` (which otherwise never time out). All other opts are
-      passed to `:httpc.request/4` as its options.
+      passed to `:httpc.request/4` as its options, except `:body_format`: the body
+      is always returned as the binary that was received.
 
   Returns {:ok, String.t()} | {:error, String.t()}
   """
@@ -28,10 +28,12 @@ defmodule Pinchflat.HTTP.HTTPClient do
   def get(url, headers \\ [], opts \\ []) do
     headers = parse_headers(headers)
     {http_options, opts} = Keyword.pop(opts, :http_options, [])
+    # The default (a charlist of the body's bytes) would double-encode non-ASCII UTF-8 in `to_string/1`
+    opts = Keyword.put(opts, :body_format, :binary)
 
     case :httpc.request(:get, {url, headers}, http_options, opts) do
       {:ok, {{_version, 200, _reason_phrase}, _headers, body}} ->
-        {:ok, to_string(body)}
+        {:ok, body}
 
       {:ok, {{_version, status_code, reason_phrase}, _headers, _body}} ->
         {:error, "HTTP request failed with status code #{status_code}: #{reason_phrase}"}
