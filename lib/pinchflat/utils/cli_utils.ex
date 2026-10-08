@@ -15,17 +15,31 @@ defmodule Pinchflat.Utils.CliUtils do
   Delegates to `System.cmd/3` and any options/output
   are passed through. Custom options can be passed in.
 
+  A `nil` command (ie: `System.find_executable/1` didn't find it on the PATH)
+  isn't run. Instead it fails with the shell's "command not found" exit status (127).
+
   Custom options:
     - logging_arg_override: if set, the passed value will be logged in place of
       the actual arguments passed to the command
 
   Returns {binary(), integer()}
   """
-  def wrap_cmd(command, args, passthrough_opts \\ [], opts \\ []) do
+  def wrap_cmd(command, args, passthrough_opts \\ [], opts \\ [])
+
+  def wrap_cmd(nil, args, _passthrough_opts, opts) do
+    output = "executable not found"
+    logging_arg_override = logged_args(args, opts)
+
+    Logger.error("[command_wrapper]: #{output} (is it installed and on PATH?) called with: #{logging_arg_override}")
+
+    {output, 127}
+  end
+
+  def wrap_cmd(command, args, passthrough_opts, opts) do
     wrapper_command = Path.join(:code.priv_dir(:pinchflat), "cmd_wrapper.sh")
     actual_command = [command] ++ args
     command_opts = set_command_opts() ++ passthrough_opts
-    logging_arg_override = Keyword.get(opts, :logging_arg_override, Enum.join(args, " "))
+    logging_arg_override = logged_args(args, opts)
 
     Logger.info("[command_wrapper]: #{command} called with: #{logging_arg_override}")
 
@@ -74,6 +88,10 @@ defmodule Pinchflat.Utils.CliUtils do
 
   defp parse_option(arg, acc) when is_binary(arg) do
     acc ++ [arg]
+  end
+
+  defp logged_args(args, opts) do
+    Keyword.get(opts, :logging_arg_override, Enum.join(args, " "))
   end
 
   defp log_cmd_result(command, logging_arg_override, status, output) do

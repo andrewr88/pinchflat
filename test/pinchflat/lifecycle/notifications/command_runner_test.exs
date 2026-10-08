@@ -41,6 +41,12 @@ defmodule Pinchflat.Lifecycle.Notifications.CommandRunnerTest do
       end)
     end
 
+    test "returns an error if apprise isn't installed" do
+      wrap_executable(nil, fn ->
+        assert {:error, _} = Runner.run("json://x", title: "t")
+      end)
+    end
+
     test "returns a relevant error if no servers are provided" do
       assert {:error, :no_servers} = Runner.run(nil, [])
       assert {:error, :no_servers} = Runner.run("", [])

@@ -1,6 +1,8 @@
 defmodule Pinchflat.Utils.CliUtilsTest do
   use Pinchflat.DataCase
 
+  import ExUnit.CaptureLog
+
   alias Pinchflat.Utils.CliUtils
 
   describe "wrap_cmd/3" do
@@ -10,6 +12,24 @@ defmodule Pinchflat.Utils.CliUtilsTest do
 
     test "sets the current directory to the tmp dir" do
       assert {"/tmp/test/tmpfiles\n", 0} = CliUtils.wrap_cmd("pwd", [])
+    end
+
+    # `System.find_executable/1` returns nil for executables that aren't installed
+    test "returns a not found exit status instead of raising when the command is nil" do
+      assert {"executable not found", 127} = CliUtils.wrap_cmd(nil, ["--version"])
+    end
+
+    test "respects the logging override when the command is nil" do
+      # The test env only logs critical messages so let the command logging through
+      Logger.put_module_level(CliUtils, :all)
+      on_exit(fn -> Logger.delete_module_level(CliUtils) end)
+
+      log = capture_log(fn -> CliUtils.wrap_cmd(nil, ["secret-arg"], [], logging_arg_override: "[suppressed]") end)
+
+      assert log =~ "[error]"
+      assert log =~ "executable not found"
+      assert log =~ "[suppressed]"
+      refute log =~ "secret-arg"
     end
   end
 

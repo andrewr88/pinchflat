@@ -35,7 +35,7 @@ defmodule PinchflatWeb.Settings.AppriseServerLiveTest do
 
     test "sends a test message to the specified server", %{conn: conn} do
       expect(AppriseRunnerMock, :run, fn servers, args ->
-        assert servers == ["cool-value"]
+        assert servers == "cool-value"
         assert args == [title: "Pinchflat Test", body: "This is a test message from Pinchflat"]
 
         {:ok, ""}
@@ -58,6 +58,38 @@ defmodule PinchflatWeb.Settings.AppriseServerLiveTest do
 
       refute result =~ "hero-paper-airplane"
       assert result =~ "hero-check"
+      assert result =~ "Sent!"
+    end
+
+    test "sets the button icon to an x if sending fails", %{conn: conn} do
+      expect(AppriseRunnerMock, :run, fn _, _ -> {:error, "apprise failed"} end)
+
+      {:ok, view, _html} = live_isolated(conn, AppriseServerLive, session: create_session("cool-value"))
+
+      result =
+        view
+        |> element("button")
+        |> render_click()
+
+      refute result =~ "hero-check"
+      assert result =~ "hero-x-mark"
+      assert result =~ "Failed to send"
+    end
+
+    test "reports a failure if no server is set", %{conn: conn} do
+      # The real runner is what rejects a blank server
+      expect(AppriseRunnerMock, :run, 2, &Pinchflat.Lifecycle.Notifications.CommandRunner.run/2)
+
+      for value <- [nil, ""] do
+        {:ok, view, _html} = live_isolated(conn, AppriseServerLive, session: create_session(value))
+
+        result =
+          view
+          |> element("button")
+          |> render_click()
+
+        assert result =~ "hero-x-mark"
+      end
     end
   end
 
