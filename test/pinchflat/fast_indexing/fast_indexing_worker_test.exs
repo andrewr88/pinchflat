@@ -44,6 +44,22 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
       )
     end
 
+    test "reschedules itself if media IDs can't be fetched" do
+      expect(HTTPClientMock, :get, fn _url ->
+        {:error, "HTTP request failed with status code 500: Internal Server Error"}
+      end)
+
+      source = source_fixture(fast_index: true)
+
+      assert {:ok, _} = perform_job(FastIndexingWorker, %{id: source.id})
+
+      assert_enqueued(
+        worker: FastIndexingWorker,
+        args: %{"id" => source.id},
+        scheduled_at: now_plus(Source.fast_index_frequency(), :minutes)
+      )
+    end
+
     test "does not reschedule if that would create a duplicate job" do
       stub(HTTPClientMock, :get, fn _url -> {:ok, ""} end)
       source = source_fixture(fast_index: true)
@@ -104,6 +120,18 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
       source = source_fixture(fast_index: true)
 
       expect(HTTPClientMock, :get, fn _url -> {:ok, ""} end)
+      expect(AppriseRunnerMock, :run, 0, fn _servers, _opts -> {:ok, ""} end)
+
+      perform_job(FastIndexingWorker, %{id: source.id})
+    end
+
+    test "doesn't send a notification if media IDs can't be fetched" do
+      source = source_fixture(fast_index: true)
+
+      expect(HTTPClientMock, :get, fn _url ->
+        {:error, "HTTP request failed with status code 500: Internal Server Error"}
+      end)
+
       expect(AppriseRunnerMock, :run, 0, fn _servers, _opts -> {:ok, ""} end)
 
       perform_job(FastIndexingWorker, %{id: source.id})

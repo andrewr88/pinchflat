@@ -69,6 +69,19 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
       assert worker_1.priority == 1
     end
 
+    test "returns nothing but still kicks off pending downloads if media IDs can't be fetched", %{source: source} do
+      pending_item = media_item_fixture(source_id: source.id, media_filepath: nil)
+
+      expect(HTTPClientMock, :get, fn _url ->
+        {:error, "HTTP request failed with status code 500: Internal Server Error"}
+      end)
+
+      assert [] = FastIndexingHelpers.index_and_kickoff_downloads(source)
+
+      assert [worker] = all_enqueued(worker: MediaDownloadWorker)
+      assert worker.args["id"] == pending_item.id
+    end
+
     test "returns the found media items", %{source: source} do
       expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 

@@ -39,14 +39,26 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpers do
   order of operations and how this fits into the indexing process.
 
   Returns [%MediaItem{}] where each item is a new media item that was created _but not necessarily
-  downloaded_.
+  downloaded_. If the media IDs can't be fetched, the error is logged and treated as if no new media
+  was found (ie: returns [] but still kicks off downloads for pending media items).
   """
   def index_and_kickoff_downloads(%Source{} = source) do
     # The media_profile is needed to determine the quality options to _then_ determine a more
     # accurate predicted filepath
     source = Repo.preload(source, [:media_profile])
 
-    {:ok, media_ids} = get_recent_media_ids(source)
+    # Don't raise on a failed fetch - `FastIndexingWorker` relies on this returning so it can
+    # reschedule itself on its normal cadence rather than falling back to Oban's retry backoff
+    media_ids =
+      case get_recent_media_ids(source) do
+        {:ok, media_ids} ->
+          media_ids
+
+        {:error, reason} ->
+          Logger.warning("Could not fetch recent media IDs for source #{source.id}: #{inspect(reason)}")
+          []
+      end
+
     existing_media_items = list_media_items_by_media_id_for(source, media_ids)
     new_media_ids = media_ids -- Enum.map(existing_media_items, & &1.media_id)
 
