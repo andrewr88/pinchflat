@@ -57,7 +57,8 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorker do
        to the `yt-dlp` output file so we can create media items as they come in
        for a little speedup (see {Fast,Slow}IndexingHelpers comments for more)
     4. If this job is meant to reschedule (ie: has an index frequency > 0),
-       it reschedules itself. If not, it runs once and does not reschedule
+       it reschedules itself (even if indexing failed). If not, it runs once and
+       does not reschedule. If that one run fails to index anything, Oban retries it
     5. If the source uses fast indexing, that job is kicked off as well. It
        uses RSS to run a smaller, faster, and more frequent index. That job
        handles rescheduling itself but largely has a similar behaviour to this
@@ -70,7 +71,7 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorker do
   NOTE: Since indexing can take a LONG time, I should check what happens if an
   application restart occurs while a job is running. Will the job be lost?
 
-  Returns :ok | {:ok, %Task{}}
+  Returns :ok | {:ok, %Task{}} | {:ok, :job_exists} | {:error, :indexing_failed}
   """
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"id" => source_id} = args}) do
@@ -78,7 +79,9 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorker do
 
     case {source.index_frequency_minutes, source.last_indexed_at} do
       {index_freq, _} when index_freq > 0 ->
-        # If the indexing is on a schedule simply run indexing and reschedule
+        # If the indexing is on a schedule simply run indexing and reschedule. This
+        # reschedules even if indexing failed so the source keeps its normal schedule
+        # (failing the job here would also leave an Oban retry next to the new job)
         perform_indexing_and_notification(source, was_forced: args["force"])
         maybe_enqueue_fast_indexing_task(source)
         reschedule_indexing(source)
@@ -86,22 +89,29 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorker do
       {_, nil} ->
         # If the source has never been indexed, index it once
         # even if it's not meant to reschedule
-        perform_indexing_and_notification(source, was_forced: args["force"])
-        :ok
+        source
+        |> perform_indexing_and_notification(was_forced: args["force"])
+        |> to_job_result()
 
       _ ->
         # If the source HAS been indexed and is not meant to reschedule,
         # perform a no-op (unless forced)
         if args["force"] do
-          perform_indexing_and_notification(source, was_forced: true)
+          source
+          |> perform_indexing_and_notification(was_forced: true)
+          |> to_job_result()
+        else
+          :ok
         end
-
-        :ok
     end
   rescue
     Ecto.NoResultsError -> Logger.info("#{__MODULE__} discarded: source #{source_id} not found")
     Ecto.StaleEntryError -> Logger.info("#{__MODULE__} discarded: source #{source_id} stale")
   end
+
+  # Nothing reschedules a one-off index so return failures to Oban, letting it retry them
+  defp to_job_result({:error, reason}), do: {:error, reason}
+  defp to_job_result(_media_items), do: :ok
 
   defp perform_indexing_and_notification(source, indexing_opts) do
     apprise_server = Settings.get!(:apprise_server)

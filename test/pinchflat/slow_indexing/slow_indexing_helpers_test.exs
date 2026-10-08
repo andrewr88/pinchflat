@@ -1,6 +1,7 @@
 defmodule Pinchflat.SlowIndexing.SlowIndexingHelpersTest do
   use Pinchflat.DataCase
 
+  import ExUnit.CaptureLog
   import Pinchflat.TasksFixtures
   import Pinchflat.MediaFixtures
   import Pinchflat.SourcesFixtures
@@ -301,6 +302,79 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpersTest do
       end)
 
       SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+    end
+  end
+
+  describe "index_and_enqueue_download_for_media_items/2 when yt-dlp fails" do
+    @ytdlp_error "ERROR: [youtube] abc123: Join this channel to get access to members-only content"
+
+    setup do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        {:error, @ytdlp_error, 1}
+      end)
+
+      :ok
+    end
+
+    test "returns an error if yt-dlp didn't write any media", %{source: source} do
+      assert {:error, _} = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+    end
+
+    test "doesn't update the source's last_indexed_at field if yt-dlp didn't write any media", %{source: source} do
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert Repo.reload!(source).last_indexed_at == nil
+    end
+
+    test "still enqueues a job for each pending media item", %{source: source} do
+      media_item = media_item_fixture(source_id: source.id, media_filepath: nil)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert_enqueued(worker: MediaDownloadWorker, args: %{"id" => media_item.id})
+    end
+
+    test "logs the error with a trimmed copy of yt-dlp's output", %{source: source} do
+      # The test env only logs critical messages so let this module's logging through
+      Logger.put_module_level(SlowIndexingHelpers, :all)
+      on_exit(fn -> Logger.delete_module_level(SlowIndexingHelpers) end)
+
+      output = @ytdlp_error <> String.duplicate("\nERROR: [youtube] xyz789: Video unavailable", 100) <> "\nLAST LINE"
+
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        {:error, output, 1}
+      end)
+
+      log = capture_log(fn -> SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source) end)
+
+      assert log =~ "source #{source.id}:"
+      assert log =~ @ytdlp_error
+      refute log =~ "LAST LINE"
+    end
+
+    test "uses the media yt-dlp wrote if it exits with 1 (ie: only some media failed)", %{source: source} do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        File.write!(Keyword.fetch!(addl_opts, :output_filepath), source_attributes_return_fixture())
+
+        {:error, @ytdlp_error, 1}
+      end)
+
+      media_items = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert ["video1", "video2", "video3"] == Enum.map(media_items, & &1.media_id)
+      assert Repo.reload!(source).last_indexed_at
+      assert [_, _, _] = all_enqueued(worker: MediaDownloadWorker)
+    end
+
+    test "doesn't use the media yt-dlp wrote if it exits for another reason", %{source: source} do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        File.write!(Keyword.fetch!(addl_opts, :output_filepath), source_attributes_return_fixture())
+
+        {:error, "Killed", 137}
+      end)
+
+      assert {:error, _} = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert Repo.reload!(source).last_indexed_at == nil
     end
   end
 

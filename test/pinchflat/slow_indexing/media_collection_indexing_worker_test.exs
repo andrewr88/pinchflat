@@ -231,6 +231,63 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorkerTest do
     end
   end
 
+  describe "perform/1 when indexing fails" do
+    @ytdlp_error "ERROR: [youtube] abc123: Join this channel to get access to members-only content"
+
+    setup do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        {:error, @ytdlp_error, 1}
+      end)
+
+      stub(AppriseRunnerMock, :run, fn _, _ -> {:ok, ""} end)
+
+      :ok
+    end
+
+    test "still reschedules the job based on the index frequency" do
+      source = source_fixture(collection_type: :playlist, index_frequency_minutes: 60)
+
+      assert {:ok, _} = perform_job(MediaCollectionIndexingWorker, %{id: source.id})
+
+      assert_enqueued(
+        worker: MediaCollectionIndexingWorker,
+        args: %{"id" => source.id},
+        scheduled_at: now_plus(source.index_frequency_minutes, :minutes)
+      )
+    end
+
+    test "still creates a future task for fast indexing if appropriate" do
+      source = source_fixture(collection_type: :playlist, index_frequency_minutes: 60, fast_index: true)
+
+      perform_job(MediaCollectionIndexingWorker, %{id: source.id})
+
+      assert_enqueued(
+        worker: FastIndexingWorker,
+        args: %{"id" => source.id},
+        scheduled_at: now_plus(Source.fast_index_frequency(), :minutes)
+      )
+    end
+
+    test "returns an error so a one-off index that wrote no media gets retried" do
+      source = source_fixture(index_frequency_minutes: -1, last_indexed_at: nil)
+
+      assert {:error, _} = perform_job(MediaCollectionIndexingWorker, %{id: source.id})
+    end
+
+    test "doesn't retry a one-off index if yt-dlp wrote media before exiting with an error" do
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, addl_opts ->
+        File.write!(Keyword.fetch!(addl_opts, :output_filepath), source_attributes_return_fixture())
+
+        {:error, @ytdlp_error, 1}
+      end)
+
+      source = source_fixture(index_frequency_minutes: -1, last_indexed_at: nil)
+
+      assert :ok = perform_job(MediaCollectionIndexingWorker, %{id: source.id})
+      assert Repo.reload!(source).last_indexed_at
+    end
+  end
+
   describe "perform/1 when testing apprise notifications" do
     setup do
       Settings.set(apprise_server: "server_1")
@@ -254,6 +311,18 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorkerTest do
       end)
 
       perform_job(MediaCollectionIndexingWorker, %{id: source.id})
+    end
+
+    test "doesn't send a notification if indexing fails without finding new media" do
+      source = source_fixture()
+
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        {:error, "ERROR: [youtube:tab] @foo: This channel does not exist.", 1}
+      end)
+
+      expect(AppriseRunnerMock, :run, 0, fn _servers, _opts -> {:ok, ""} end)
+
+      assert {:ok, _} = perform_job(MediaCollectionIndexingWorker, %{id: source.id})
     end
   end
 end
