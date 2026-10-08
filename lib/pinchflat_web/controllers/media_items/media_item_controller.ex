@@ -71,7 +71,8 @@ defmodule PinchflatWeb.MediaItems.MediaItemController do
   def stream(conn, %{"uuid" => uuid}) do
     media_item = Repo.get_by!(MediaItem, uuid: uuid)
 
-    if File.exists?(media_item.media_filepath) do
+    # The filepath is nil once the media's files are deleted, but stream URLs live on in podcast feeds
+    if media_item.media_filepath && File.exists?(media_item.media_filepath) do
       file_size = File.stat!(media_item.media_filepath).size
       mime_type = MIME.from_path(media_item.media_filepath)
 
@@ -85,8 +86,15 @@ defmodule PinchflatWeb.MediaItems.MediaItemController do
           |> put_resp_header("accept-ranges", "bytes")
           |> put_resp_header("content-range", "bytes #{start_pos}-#{end_pos}/#{file_size}")
           |> put_resp_header("content-length", to_string(length))
-          |> put_resp_header("content-disposition", "inline; filename=\"#{media_item.title}\"")
+          |> put_resp_header("content-disposition", content_disposition(media_item.title))
           |> send_file(206, media_item.media_filepath, start_pos, length)
+
+        {:error, :unsatisfiable_range} ->
+          Logger.debug("Unsatisfiable range request for media item: #{media_item.uuid}")
+
+          conn
+          |> put_resp_header("content-range", "bytes */#{file_size}")
+          |> send_resp(416, "Range not satisfiable")
 
         {:error, :invalid_range} ->
           Logger.debug("Invalid range request for media item: #{media_item.uuid} - serving full file")
@@ -96,7 +104,7 @@ defmodule PinchflatWeb.MediaItems.MediaItemController do
           |> put_resp_header("accept-ranges", "bytes")
           |> put_resp_header("content-range", "bytes 0-#{file_size - 1}/#{file_size}")
           |> put_resp_header("content-length", to_string(file_size))
-          |> put_resp_header("content-disposition", "inline; filename=\"#{media_item.title}\"")
+          |> put_resp_header("content-disposition", content_disposition(media_item.title))
           |> send_file(200, media_item.media_filepath)
       end
     else
@@ -104,30 +112,65 @@ defmodule PinchflatWeb.MediaItems.MediaItemController do
     end
   end
 
+  # A missing or malformed header is an `:invalid_range` and gets the whole file, whereas a
+  # well-formed range that selects no bytes is an `:unsatisfiable_range`. See RFC7233 section 2.1
   defp parse_range(conn, file_size) do
     with [range_header | _] <- get_req_header(conn, "range"),
          ["bytes", range] <- String.split(range_header, "="),
          [start_pos, end_pos] <- String.split(range, "-") do
-      validate_range(start_pos, end_pos, file_size)
+      validate_range(parse_range_position(start_pos), parse_range_position(end_pos), file_size)
     else
       _ -> {:error, :invalid_range}
     end
   end
 
-  defp validate_range(start_pos, end_pos, file_size) do
-    case {Integer.parse(start_pos), Integer.parse(end_pos)} do
-      {:error, :error} ->
-        {:error, :invalid_range}
+  # eg: "bytes=100-" is everything from the offset onwards
+  defp validate_range({:ok, start_pos}, nil, file_size) do
+    satisfiable_range(start_pos, file_size - 1)
+  end
 
-      {{start_pos, _}, :error} ->
-        {:ok, {start_pos, file_size - 1}}
+  # eg: "bytes=-500" is the last 500 bytes, or the whole file if it's smaller than that
+  defp validate_range(nil, {:ok, suffix_length}, file_size) do
+    satisfiable_range(max(file_size - suffix_length, 0), file_size - 1)
+  end
 
-      # See RFC7233
-      {{start_pos, _}, {end_pos, _}} when end_pos >= file_size ->
-        {:ok, {start_pos, file_size - 1}}
+  # eg: "bytes=0-499" is allowed to end past the end of the file
+  defp validate_range({:ok, start_pos}, {:ok, end_pos}, file_size) do
+    satisfiable_range(start_pos, min(end_pos, file_size - 1))
+  end
 
-      {{start_pos, _}, {end_pos, _}} ->
-        {:ok, {start_pos, end_pos}}
+  defp validate_range(_start_pos, _end_pos, _file_size), do: {:error, :invalid_range}
+
+  # Catches ranges that start at or past the end of the file, ranges that end before they
+  # start (eg: "bytes=100-50"), "bytes=-0", and any range on an empty file
+  defp satisfiable_range(start_pos, end_pos) when start_pos > end_pos, do: {:error, :unsatisfiable_range}
+  defp satisfiable_range(start_pos, end_pos), do: {:ok, {start_pos, end_pos}}
+
+  # Requires the whole position to be a number so that eg: "10abc" isn't treated as 10
+  defp parse_range_position(""), do: nil
+
+  defp parse_range_position(position) do
+    case Integer.parse(position) do
+      {position, ""} -> {:ok, position}
+      _ -> :error
     end
+  end
+
+  # The title comes from the remote source so it can contain anything. Clients that support RFC6266
+  # use the exact title from `filename*` and older ones fall back to an ASCII-only `filename` without
+  # control characters (which would make `put_resp_header/3` raise), quotes, or backslashes
+  defp content_disposition(title) do
+    ascii_title =
+      title
+      |> String.codepoints()
+      |> Enum.map_join(fn
+        <<char>> when char < 0x20 or char == 0x7F -> ""
+        <<char>> when char in 0x20..0x7E and char not in [?", ?\\] -> <<char>>
+        _ -> "_"
+      end)
+
+    utf8_title = URI.encode(title, &URI.char_unreserved?/1)
+
+    ~s(inline; filename="#{ascii_title}"; filename*=UTF-8''#{utf8_title})
   end
 end

@@ -138,6 +138,26 @@ defmodule PinchflatWeb.MediaItemControllerTest do
       assert conn.status == 404
     end
 
+    # Deleting an item's files nils its filepath, but the stream URL lives on in podcast feeds
+    test "returns 404 if the media's files have been deleted", %{conn: conn} do
+      media_item = media_item_fixture(%{media_filepath: nil})
+      conn = get(conn, ~p"/media/#{media_item.uuid}/stream")
+
+      assert conn.status == 404
+    end
+
+    test "encodes the title in the content disposition", %{conn: conn} do
+      media_item = media_item_with_attachments(%{title: ~s(Say "hi"\r\nto Zoë \\o/)})
+      conn = get(conn, ~p"/media/#{media_item.uuid}/stream")
+
+      expected =
+        ~s(inline; filename="Say _hi_to Zo_ _o/"; ) <>
+          "filename*=UTF-8''Say%20%22hi%22%0D%0Ato%20Zo%C3%AB%20%5Co%2F"
+
+      assert conn.status == 200
+      assert {"content-disposition", expected} in conn.resp_headers
+    end
+
     test "automatically sets the content type", %{conn: conn} do
       media_item = media_item_with_attachments()
       conn = get(conn, ~p"/media/#{media_item.uuid}/stream")
@@ -157,7 +177,7 @@ defmodule PinchflatWeb.MediaItemControllerTest do
 
   describe "streaming media when range is valid" do
     setup do
-      media_item = media_item_with_attachments()
+      media_item = media_item_with_attachments(%{title: "My Video"})
 
       %{media_item: media_item}
     end
@@ -173,7 +193,7 @@ defmodule PinchflatWeb.MediaItemControllerTest do
       assert conn.status == 206
       assert {"content-range", "bytes 0-100/#{filesize}"} in conn.resp_headers
       assert {"content-length", "101"} in conn.resp_headers
-      assert {"content-disposition", "inline; filename=\"#{media_item.title}\""} in conn.resp_headers
+      assert {"content-disposition", ~s(inline; filename="My Video"; filename*=UTF-8''My%20Video)} in conn.resp_headers
     end
 
     test "streams the specified range", %{conn: conn, media_item: media_item} do
@@ -233,11 +253,64 @@ defmodule PinchflatWeb.MediaItemControllerTest do
 
       assert conn.resp_body == expected
     end
+
+    test "supports suffix ranges and ranges at the edges of the file", %{media_item: media_item} do
+      contents = File.read!(media_item.media_filepath)
+      size = byte_size(contents)
+
+      # {range header, first byte, last byte}
+      cases = [
+        {"bytes=-500", size - 500, size - 1},
+        {"bytes=-#{size * 10}", 0, size - 1},
+        {"bytes=#{size - 1}-", size - 1, size - 1},
+        {"bytes=0-0", 0, 0}
+      ]
+
+      for {range, first, last} <- cases do
+        conn = stream_with_range(media_item, range)
+        length = last - first + 1
+
+        assert {range, conn.status} == {range, 206}
+        assert {"content-range", "bytes #{first}-#{last}/#{size}"} in conn.resp_headers
+        assert {"content-length", to_string(length)} in conn.resp_headers
+        assert conn.resp_body == binary_part(contents, first, length)
+      end
+    end
+  end
+
+  describe "streaming media when range is unsatisfiable" do
+    setup do
+      media_item = media_item_with_attachments()
+
+      %{media_item: media_item}
+    end
+
+    test "returns a 416 with the file size", %{media_item: media_item} do
+      size = File.stat!(media_item.media_filepath).size
+
+      for range <- ["bytes=#{size}-", "bytes=#{size}-#{size + 100}", "bytes=100-50", "bytes=-0"] do
+        conn = stream_with_range(media_item, range)
+
+        assert {range, conn.status} == {range, 416}
+        assert {"content-range", "bytes */#{size}"} in conn.resp_headers
+      end
+    end
+
+    test "returns a 416 for any range on an empty file", %{media_item: media_item} do
+      File.write!(media_item.media_filepath, "")
+
+      for range <- ["bytes=0-", "bytes=0-100", "bytes=-500"] do
+        conn = stream_with_range(media_item, range)
+
+        assert {range, conn.status} == {range, 416}
+        assert {"content-range", "bytes */0"} in conn.resp_headers
+      end
+    end
   end
 
   describe "streaming media when range is invalid or not present" do
     setup do
-      media_item = media_item_with_attachments()
+      media_item = media_item_with_attachments(%{title: "My Video"})
 
       %{media_item: media_item}
     end
@@ -250,7 +323,7 @@ defmodule PinchflatWeb.MediaItemControllerTest do
       assert conn.status == 200
       assert {"content-length", to_string(filesize)} in conn.resp_headers
       assert {"content-range", "bytes 0-#{filesize - 1}/#{filesize}"} in conn.resp_headers
-      assert {"content-disposition", "inline; filename=\"#{media_item.title}\""} in conn.resp_headers
+      assert {"content-disposition", ~s(inline; filename="My Video"; filename*=UTF-8''My%20Video)} in conn.resp_headers
     end
 
     test "streams the entire file", %{conn: conn, media_item: media_item} do
@@ -272,10 +345,27 @@ defmodule PinchflatWeb.MediaItemControllerTest do
       assert conn.status == 200
       assert conn.resp_body == contents
     end
+
+    test "serves the entire file if a range position isn't entirely a number", %{media_item: media_item} do
+      contents = File.read!(media_item.media_filepath)
+
+      for range <- ["bytes=10abc-", "bytes=10-20abc", "bytes=abc-20", "bytes=-abc"] do
+        conn = stream_with_range(media_item, range)
+
+        assert {range, conn.status} == {range, 200}
+        assert conn.resp_body == contents
+      end
+    end
   end
 
   defp create_media_item(_) do
     media_item = media_item_fixture()
     %{media_item: media_item}
+  end
+
+  defp stream_with_range(media_item, range) do
+    build_conn()
+    |> put_req_header("range", range)
+    |> get(~p"/media/#{media_item.uuid}/stream")
   end
 end
