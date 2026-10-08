@@ -88,16 +88,25 @@ defmodule Pinchflat.Tasks do
 
   @doc """
   Creates a job from given attrs, creating a task with an attached record
-  if successful. Returns an error if the job already exists.
+  if successful. Returns an error if the job already exists. The job isn't
+  kept if the task can't be created (eg: the record has been deleted).
 
   Returns {:ok, %Task{}} | {:error, :duplicate_job} | {:error, %Ecto.Changeset{}}.
   """
   def create_job_with_task(job_attrs, task_attached_record) do
-    case Repo.insert_unique_job(job_attrs) do
-      {:ok, job} -> create_task(job, task_attached_record)
-      {:duplicate, _} -> {:error, :duplicate_job}
-      err -> err
-    end
+    # An immediate transaction takes SQLite's write lock up front. A deferred one would first read (to
+    # check the job is unique) and its write would then fail if another connection had written meanwhile
+    Repo.transaction(
+      fn ->
+        with {:ok, job} <- insert_unique_job(job_attrs),
+             {:ok, task} <- create_task(job, task_attached_record) do
+          task
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end,
+      mode: :immediate
+    )
   end
 
   @doc """
@@ -142,5 +151,12 @@ defmodule Pinchflat.Tasks do
   """
   def change_task(%Task{} = task, attrs \\ %{}) do
     Task.changeset(task, attrs)
+  end
+
+  defp insert_unique_job(job_attrs) do
+    case Repo.insert_unique_job(job_attrs) do
+      {:duplicate, _} -> {:error, :duplicate_job}
+      result -> result
+    end
   end
 end

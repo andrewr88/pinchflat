@@ -93,6 +93,40 @@ defmodule Pinchflat.Utils.FilesystemUtils do
   end
 
   @doc """
+  Writes content to a file that only its owner can read or write (0600), creating directories
+  as needed. An existing file's permissions are restricted too. The permissions are restricted
+  before the content is written so it's never readable by anyone else. Appending nothing creates
+  the file if needed without clearing its current content first.
+
+  Returns :ok | {:error, any()}
+  """
+  def write_private_file(filepath, content) do
+    with :ok <- write_p(filepath, "", [:append]),
+         :ok <- File.chmod(filepath, 0o600) do
+      File.write(filepath, content)
+    end
+  end
+
+  @doc """
+  Makes sure a directory exists that only the current OS user can access (0700), creating it and
+  its parent directories if needed. An existing directory has its permissions restricted, but only
+  if it's owned by the current user: whoever owns it could always change them back or add files to it.
+
+  The current user's ID can be given rather than looked up.
+
+  Returns :ok | {:error, {:owned_by, integer()}} | {:error, File.posix()}
+  """
+  def ensure_private_directory(directory, current_uid \\ current_os_uid()) do
+    with :ok <- File.mkdir_p(directory),
+         {:ok, %File.Stat{uid: ^current_uid}} <- File.stat(directory) do
+      File.chmod(directory, 0o700)
+    else
+      {:ok, %File.Stat{uid: owner_uid}} -> {:error, {:owned_by, owner_uid}}
+      err -> err
+    end
+  end
+
+  @doc """
   Copies a file from source to destination, creating directories as needed.
 
   Returns :ok | raises on error
@@ -172,6 +206,13 @@ defmodule Pinchflat.Utils.FilesystemUtils do
       err ->
         err
     end
+  end
+
+  # Erlang can't look up the user the VM runs as
+  defp current_os_uid do
+    {output, 0} = System.cmd("id", ["-u"])
+
+    String.to_integer(String.trim(output))
   end
 
   defp recursively_delete_empty_directories(directory, boundary) do

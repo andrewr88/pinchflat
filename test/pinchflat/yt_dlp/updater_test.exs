@@ -38,10 +38,9 @@ defmodule Pinchflat.YtDlp.UpdaterTest do
 
   describe "latest_version/0" do
     test "returns the tag name of the latest yt-dlp release" do
-      expect(HTTPClientMock, :get, fn url, headers, opts ->
+      expect(HTTPClientMock, :get, fn url, headers, _opts ->
         assert url == "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
         assert headers == ["user-agent": "pinchflat", accept: "application/vnd.github+json"]
-        assert opts == [http_options: [timeout: 10_000, connect_timeout: 5_000]]
 
         {:ok, ~s({"tag_name": "2025.09.26", "name": "yt-dlp 2025.09.26"})}
       end)

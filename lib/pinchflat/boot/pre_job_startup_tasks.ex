@@ -50,13 +50,31 @@ defmodule Pinchflat.Boot.PreJobStartupTasks do
     {:ok, state}
   end
 
+  # Commands run in the tmpfile directory and yt-dlp loads a `yt-dlp.conf` from it, so anyone else
+  # who could write to it could make yt-dlp run their own commands. The app won't start if it can't
+  # be made private
   defp ensure_tmpfile_directory do
     tmpfile_dir = Application.get_env(:pinchflat, :tmpfile_directory)
 
-    if !File.exists?(tmpfile_dir) do
-      File.mkdir_p!(tmpfile_dir)
+    case FilesystemUtils.ensure_private_directory(tmpfile_dir) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        message = """
+        The tmpfile directory #{tmpfile_dir} can't be made private to the user Pinchflat runs as: \
+        #{describe_tmpfile_directory_error(reason)}. yt-dlp runs in it and loads any yt-dlp.conf in it, \
+        so Pinchflat won't start until it's private. The directory only holds temporary files: delete it \
+        (or fix its owner) and restart, or set TMPFILE_PATH to a directory owned by Pinchflat's user.
+        """
+
+        Logger.error(message)
+        raise message
     end
   end
+
+  defp describe_tmpfile_directory_error({:owned_by, uid}), do: "it's owned by another user (uid #{uid})"
+  defp describe_tmpfile_directory_error(reason), do: :file.format_error(reason)
 
   # If a node cannot gracefully shut down, the currently executing jobs get stuck
   # in the "executing" state. This is a problem because the job runner will not
@@ -102,16 +120,21 @@ defmodule Pinchflat.Boot.PreJobStartupTasks do
   end
 
   defp create_blank_yt_dlp_files do
-    files = ["cookies.txt", "yt-dlp-configs/base-config.txt"]
+    # cookies.txt holds browser session credentials, so only the app's user should be able to read it
+    files = [
+      {"cookies.txt", &FilesystemUtils.write_private_file/2},
+      {"yt-dlp-configs/base-config.txt", &FilesystemUtils.write_p/2}
+    ]
+
     base_dir = Application.get_env(:pinchflat, :extras_directory)
 
-    Enum.each(files, fn file ->
+    Enum.each(files, fn {file, write_fun} ->
       filepath = Path.join(base_dir, file)
 
       if !File.exists?(filepath) do
         Logger.info("Creating blank file: #{filepath}")
 
-        FilesystemUtils.write_p!(filepath, "")
+        :ok = write_fun.(filepath, "")
       end
     end)
   end

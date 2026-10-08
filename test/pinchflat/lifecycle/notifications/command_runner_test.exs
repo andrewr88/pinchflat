@@ -82,6 +82,32 @@ defmodule Pinchflat.Lifecycle.Notifications.CommandRunnerTest do
 
       assert String.contains?(output, "--version")
     end
+
+    test "returns the version from the first line of the output" do
+      script = write_script("#!/bin/sh\nprintf 'Apprise v2.0.1\\r\\nPython 3.12.3\\r\\n'\n")
+
+      wrap_executable(script, fn ->
+        assert {:ok, "v2.0.1"} = Runner.version()
+      end)
+    end
+
+    test "returns the output if the command fails" do
+      script = write_script("#!/bin/sh\necho 'something went wrong'\nexit 3\n")
+
+      wrap_executable(script, fn ->
+        assert {:error, "something went wrong\n"} = Runner.version()
+      end)
+    end
+  end
+
+  defp write_script(contents) do
+    tmpfile_directory = Application.get_env(:pinchflat, :tmpfile_directory)
+    filepath = Path.join(tmpfile_directory, "apprise-#{System.unique_integer([:positive])}")
+    File.write!(filepath, contents)
+    File.chmod!(filepath, 0o755)
+    on_exit(fn -> File.rm(filepath) end)
+
+    filepath
   end
 
   defp wrap_executable(new_executable, fun) do

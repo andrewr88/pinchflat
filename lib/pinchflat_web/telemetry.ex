@@ -1,6 +1,7 @@
 defmodule PinchflatWeb.Telemetry do
   use Supervisor
   import Telemetry.Metrics
+  require Logger
 
   def start_link(arg) do
     Supervisor.start_link(__MODULE__, arg, name: __MODULE__)
@@ -19,9 +20,23 @@ defmodule PinchflatWeb.Telemetry do
     Supervisor.init(children, strategy: :one_for_one)
   end
 
-  @doc false
-  def job_state_change_broadcast(_event, _measure, _meta, _config) do
-    PinchflatWeb.Endpoint.broadcast("job:state", "change", nil)
+  @doc """
+  A `:telemetry` handler that tells subscribers to the "job:state" topic (eg: the job tables) that
+  a job's state changed. It broadcasts the same message as `PinchflatWeb.Endpoint.broadcast/3`, but
+  with just the PubSub (`:pubsub_server` in the handler's config, `Pinchflat.PubSub` by default) so
+  it works before the endpoint has started.
+
+  `:telemetry` permanently detaches a handler that raises, so a broadcast that fails (eg: the PubSub
+  isn't running) is only logged.
+  """
+  def job_state_change_broadcast(_event, _measure, _meta, config) do
+    pubsub_server = Keyword.get(config, :pubsub_server, Pinchflat.PubSub)
+    message = %Phoenix.Socket.Broadcast{topic: "job:state", event: "change", payload: nil}
+
+    Phoenix.PubSub.broadcast(pubsub_server, "job:state", message)
+  catch
+    kind, reason ->
+      Logger.debug("Couldn't broadcast a job state change: #{Exception.format_banner(kind, reason)}")
   end
 
   def metrics do

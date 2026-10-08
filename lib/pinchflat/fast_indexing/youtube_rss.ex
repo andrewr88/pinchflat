@@ -10,9 +10,6 @@ defmodule Pinchflat.FastIndexing.YoutubeRss do
 
   @behaviour YoutubeBehaviour
 
-  # Without these, `:httpc` waits indefinitely and a stalled response hangs the fast indexing job
-  @http_options [timeout: 10_000, connect_timeout: 5_000]
-
   @doc """
   Determines if the YouTube RSS feed is enabled for fast indexing. Used to satisfy
   the `YoutubeBehaviour` behaviour.
@@ -31,7 +28,7 @@ defmodule Pinchflat.FastIndexing.YoutubeRss do
   def get_recent_media_ids(%Source{} = source) do
     Logger.debug("Fetching recent media IDs from YouTube RSS feed for source: #{source.collection_id}")
 
-    case http_client().get(rss_url_for_source(source), [], http_options: @http_options) do
+    case http_client().get(rss_url_for_source(source), [], []) do
       {:ok, response} ->
         response = to_string(response)
         media_id_regex = ~r/<yt:videoId>(.*?)<\/yt:videoId>/

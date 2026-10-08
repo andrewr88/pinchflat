@@ -31,9 +31,11 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotifications do
   def send_new_media_notification(_, _, count) when count <= 0, do: :ok
 
   def send_new_media_notification(servers, source, changed_count) do
+    media_items = if changed_count == 1, do: "media item", else: "media items"
+
     opts = [
       title: "[Pinchflat] New media found",
-      body: "Found #{changed_count} new media item(s) for #{source.custom_name}. Downloading them now"
+      body: "Found #{changed_count} new #{media_items} for #{source.custom_name}. Downloading them now"
     ]
 
     case backend_runner().run(servers, opts) do
@@ -43,8 +45,9 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotifications do
       {:error, :no_servers} ->
         Logger.info("No notification servers provided for source #{source.id}")
 
-      {:error, err} ->
-        Logger.error("Failed to send new media notification for source #{source.id}: #{err}")
+      # The command's output has already been logged when it failed
+      {:error, _} ->
+        Logger.error("Failed to send new media notification for source #{source.id}")
     end
 
     :ok

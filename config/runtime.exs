@@ -1,6 +1,9 @@
 import Config
 require Logger
 
+# Reads environment variables strictly: an invalid value stops the app from starting with a clear error
+alias Pinchflat.Utils.EnvUtils
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration
@@ -42,7 +45,7 @@ config :pinchflat, Pinchflat.Repo,
 
 # Some users may want to increase the number of workers that use yt-dlp to improve speeds
 # Others may want to decrease the number of these workers to lessen the chance of an IP ban
-{yt_dlp_worker_count, _} = Integer.parse(System.get_env("YT_DLP_WORKER_CONCURRENCY", "2"))
+yt_dlp_worker_count = EnvUtils.get_positive_integer!("YT_DLP_WORKER_CONCURRENCY", 2)
 # Used to set the cron for the yt-dlp update worker. The reason for this is
 # to avoid all instances of PF updating yt-dlp at the same time, which 1)
 # could result in rate limiting and 2) gives me time to react if an update
@@ -89,7 +92,7 @@ if config_env() == :prod do
   enable_ipv6 = String.length(System.get_env("ENABLE_IPV6", "")) > 0
   enable_prometheus = String.length(System.get_env("ENABLE_PROMETHEUS", "")) > 0
 
-  config :logger, level: String.to_existing_atom(System.get_env("LOG_LEVEL", "debug"))
+  config :logger, level: EnvUtils.get_log_level!("LOG_LEVEL", :debug)
 
   config :pinchflat,
     yt_dlp_executable: System.find_executable("yt-dlp"),
@@ -146,7 +149,7 @@ if config_env() == :prod do
       # See the documentation on https://hexdocs.pm/plug_cowboy/Plug.Cowboy.html
       # for details about using IPv6 vs IPv4 and loopback vs public addresses.
       ip: if(enable_ipv6, do: {0, 0, 0, 0, 0, 0, 0, 0}, else: {0, 0, 0, 0}),
-      port: String.to_integer(System.get_env("PORT") || "4000")
+      port: EnvUtils.get_port!("PORT", 4000)
     ],
     url: [path: base_route_path],
     secret_key_base: secret_key_base

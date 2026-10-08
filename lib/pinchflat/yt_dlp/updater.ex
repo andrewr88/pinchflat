@@ -35,9 +35,8 @@ defmodule Pinchflat.YtDlp.Updater do
   def latest_version do
     # GitHub's API rejects requests that don't have a User-Agent
     headers = ["user-agent": "pinchflat", accept: "application/vnd.github+json"]
-    opts = [http_options: [timeout: 10_000, connect_timeout: 5_000]]
 
-    with {:ok, body} <- http_client().get(@latest_release_url, headers, opts) do
+    with {:ok, body} <- http_client().get(@latest_release_url, headers, []) do
       parse_tag_name(body)
     end
   end

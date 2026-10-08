@@ -13,8 +13,6 @@ defmodule Pinchflat.FastIndexing.YoutubeApi do
   @behaviour YoutubeBehaviour
 
   @agent_name {:global, __MODULE__.KeyIndex}
-  # Without these, `:httpc` waits indefinitely and a stalled response hangs the fast indexing job
-  @http_options [timeout: 10_000, connect_timeout: 5_000]
 
   @doc """
   Determines if the YouTube API is enabled for fast indexing by checking
@@ -54,7 +52,7 @@ defmodule Pinchflat.FastIndexing.YoutubeApi do
 
     playlist_id
     |> construct_api_endpoint()
-    |> http_client().get([accept: "application/json"], http_options: @http_options)
+    |> http_client().get([accept: "application/json"], [])
     |> case do
       {:ok, response} ->
         Phoenix.json_library().decode(response)

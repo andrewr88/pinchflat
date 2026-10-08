@@ -354,7 +354,7 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorkerTest do
       end)
 
       expect(AppriseRunnerMock, :run, fn _servers, opts ->
-        assert Keyword.get(opts, :body) =~ "Found 2 new media item(s)"
+        assert Keyword.get(opts, :body) =~ "Found 2 new media items for"
 
         {:ok, ""}
       end)

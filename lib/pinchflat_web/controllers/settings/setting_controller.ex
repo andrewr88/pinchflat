@@ -57,7 +57,8 @@ defmodule PinchflatWeb.Settings.SettingController do
     base_dir = Application.get_env(:pinchflat, :extras_directory)
     cookie_file = Path.join(base_dir, "cookies.txt")
 
-    case write_private_file(cookie_file, cookie_content) do
+    # cookies.txt holds browser session credentials, so only the app's user should be able to read it
+    case FilesystemUtils.write_private_file(cookie_file, cookie_content) do
       :ok ->
         conn
         |> put_flash(:info, "Cookies saved successfully.")
@@ -114,16 +115,6 @@ defmodule PinchflatWeb.Settings.SettingController do
       conn
       |> put_flash(:error, "No cookie file found. Please save your cookies first.")
       |> redirect(to: ~p"/settings")
-    end
-  end
-
-  # cookies.txt holds browser session credentials, so only the app's user should be able to read it.
-  # The permissions are restricted before the cookies are written so they're never readable by anyone
-  # else. Appending nothing creates the file if needed without clearing the current cookies.
-  defp write_private_file(filepath, content) do
-    with :ok <- FilesystemUtils.write_p(filepath, "", [:append]),
-         :ok <- File.chmod(filepath, 0o600) do
-      File.write(filepath, content)
     end
   end
 

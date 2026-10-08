@@ -1,6 +1,7 @@
 defmodule Pinchflat.Lifecycle.Notifications.SourceNotificationsTest do
   use Pinchflat.DataCase
 
+  import ExUnit.CaptureLog
   import Pinchflat.MediaFixtures
   import Pinchflat.SourcesFixtures
 
@@ -19,7 +20,7 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotificationsTest do
 
         assert opts == [
                  title: "[Pinchflat] New media found",
-                 body: "Found 1 new media item(s) for #{source.custom_name}. Downloading them now"
+                 body: "Found 1 new media item for #{source.custom_name}. Downloading them now"
                ]
 
         {:ok, ""}
@@ -38,7 +39,7 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotificationsTest do
       ]
 
       expect(AppriseRunnerMock, :run, fn _servers, opts ->
-        assert Keyword.get(opts, :body) =~ "Found 2 new media item(s)"
+        assert Keyword.get(opts, :body) =~ "Found 2 new media items for"
 
         {:ok, ""}
       end)
@@ -55,7 +56,7 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotificationsTest do
       ]
 
       expect(AppriseRunnerMock, :run, fn _servers, opts ->
-        assert Keyword.get(opts, :body) =~ "Found 1 new media item(s)"
+        assert Keyword.get(opts, :body) =~ "Found 1 new media item for"
 
         {:ok, ""}
       end)
@@ -69,7 +70,7 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotificationsTest do
       media_item_fixture(%{source_id: source.id, media_filepath: nil})
 
       expect(AppriseRunnerMock, :run, fn _servers, opts ->
-        assert Keyword.get(opts, :body) =~ "Found 1 new media item(s)"
+        assert Keyword.get(opts, :body) =~ "Found 1 new media item for"
 
         {:ok, ""}
       end)
@@ -84,7 +85,7 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotificationsTest do
       missing_media_items = Enum.map(1..50_000, &%MediaItem{id: -&1})
 
       expect(AppriseRunnerMock, :run, fn _servers, opts ->
-        assert Keyword.get(opts, :body) =~ "Found 1 new media item(s)"
+        assert Keyword.get(opts, :body) =~ "Found 1 new media item for"
 
         {:ok, ""}
       end)
@@ -128,7 +129,7 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotificationsTest do
 
         assert opts == [
                  title: "[Pinchflat] New media found",
-                 body: "Found 1 new media item(s) for #{source.custom_name}. Downloading them now"
+                 body: "Found 1 new media item for #{source.custom_name}. Downloading them now"
                ]
 
         {:ok, ""}
@@ -145,5 +146,48 @@ defmodule Pinchflat.Lifecycle.Notifications.SourceNotificationsTest do
       :ok = SourceNotifications.send_new_media_notification(@apprise_servers, source, 0)
       :ok = SourceNotifications.send_new_media_notification(@apprise_servers, source, -1)
     end
+
+    test "uses the plural for more than one media item" do
+      source = source_fixture()
+
+      expect(AppriseRunnerMock, :run, fn _servers, opts ->
+        assert Keyword.get(opts, :body) == "Found 3 new media items for #{source.custom_name}. Downloading them now"
+
+        {:ok, ""}
+      end)
+
+      :ok = SourceNotifications.send_new_media_notification(@apprise_servers, source, 3)
+    end
+
+    # The command runner has already logged the command's output at the error level
+    test "logs which source the notification failed for" do
+      source = source_fixture()
+      expect(AppriseRunnerMock, :run, fn _, _ -> {:error, "apprise output"} end)
+
+      log =
+        capture_notification_log(fn -> SourceNotifications.send_new_media_notification(@apprise_servers, source, 1) end)
+
+      assert log =~ "[error]"
+      assert log =~ "source #{source.id}"
+      refute log =~ "apprise output"
+    end
+
+    test "doesn't log an error if there are no notification servers" do
+      source = source_fixture()
+      expect(AppriseRunnerMock, :run, fn _, _ -> {:error, :no_servers} end)
+
+      log = capture_notification_log(fn -> SourceNotifications.send_new_media_notification(nil, source, 1) end)
+
+      refute log =~ "[error]"
+    end
+  end
+
+  # The test env only logs critical messages so let this module's logging through. Returns the log
+  # and checks that sending a notification always returns :ok
+  defp capture_notification_log(fun) do
+    Logger.put_module_level(SourceNotifications, :all)
+    on_exit(fn -> Logger.delete_module_level(SourceNotifications) end)
+
+    capture_log(fn -> assert :ok = fun.() end)
   end
 end

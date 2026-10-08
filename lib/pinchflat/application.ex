@@ -20,10 +20,12 @@ defmodule Pinchflat.Application do
       Pinchflat.Repo,
       # Must be before startup tasks
       Pinchflat.Boot.PreJobStartupTasks,
+      # Job state changes are broadcast with it (see `attach_oban_telemetry/0`), so it must be running
+      # before Oban runs any jobs and until Oban has stopped
+      {Phoenix.PubSub, name: Pinchflat.PubSub},
       {Oban, Application.fetch_env!(:pinchflat, Oban)},
       Pinchflat.Boot.PostJobStartupTasks,
       {DNSCluster, query: Application.get_env(:pinchflat, :dns_cluster_query) || :ignore},
-      {Phoenix.PubSub, name: Pinchflat.PubSub},
       # Start the Finch HTTP client for sending emails
       {Finch, name: Pinchflat.Finch},
       # Start a worker by calling: Pinchflat.Worker.start_link(arg)

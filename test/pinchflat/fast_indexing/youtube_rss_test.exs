@@ -42,17 +42,6 @@ defmodule Pinchflat.FastIndexing.YoutubeRssTest do
       assert {:ok, _} = YoutubeRss.get_recent_media_ids(source)
     end
 
-    test "sets request timeouts so a stalled response can't hang the caller", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url, _headers, opts ->
-        assert is_integer(opts[:http_options][:timeout])
-        assert is_integer(opts[:http_options][:connect_timeout])
-
-        {:ok, ""}
-      end)
-
-      assert {:ok, _} = YoutubeRss.get_recent_media_ids(source)
-    end
-
     test "returns an error with the reason if the HTTP request fails", %{source: source} do
       expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
         {:error, "HTTP request failed with status code 500: Internal Server Error"}

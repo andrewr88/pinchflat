@@ -6,6 +6,7 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
   import Pinchflat.SourcesFixtures
 
   alias Pinchflat.Settings
+  alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Boot.PreJobStartupTasks
   alias Pinchflat.JobFixtures.TestJobWorker
   alias Pinchflat.Sources.SourceDirectoryUpdateWorker
@@ -28,6 +29,46 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
       PreJobStartupTasks.init(%{})
 
       assert File.exists?(tmpfile_dir)
+    end
+
+    # Commands run in it and yt-dlp loads a `yt-dlp.conf` from it, so nobody else should be able to write to it
+    test "makes a new tmpfile directory accessible only by the app's user" do
+      tmpfile_dir = Application.get_env(:pinchflat, :tmpfile_directory)
+      File.rm_rf!(tmpfile_dir)
+
+      PreJobStartupTasks.init(%{})
+
+      assert File.stat!(tmpfile_dir).mode == 0o40700
+    end
+
+    test "makes an existing tmpfile directory accessible only by the app's user" do
+      tmpfile_dir = Application.get_env(:pinchflat, :tmpfile_directory)
+      File.chmod!(tmpfile_dir, 0o777)
+
+      PreJobStartupTasks.init(%{})
+
+      assert File.stat!(tmpfile_dir).mode == 0o40700
+    end
+
+    test "refuses to start if the tmpfile directory can't be made private" do
+      # The test env only logs critical messages so let this module's logging through
+      Logger.put_module_level(PreJobStartupTasks, :all)
+      tmpfile_dir = Application.get_env(:pinchflat, :tmpfile_directory)
+      File.rm_rf!(tmpfile_dir)
+      File.write!(tmpfile_dir, "not a directory")
+
+      on_exit(fn ->
+        Logger.delete_module_level(PreJobStartupTasks)
+        File.rm(tmpfile_dir)
+        File.mkdir_p(tmpfile_dir)
+      end)
+
+      log =
+        capture_log([level: :error], fn ->
+          assert_raise RuntimeError, ~r/tmpfile directory/, fn -> PreJobStartupTasks.init(%{}) end
+        end)
+
+      assert log =~ tmpfile_dir
     end
   end
 
@@ -72,6 +113,39 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
       assert Repo.reload!(job).state == "available"
     end
 
+    test "leaves finished jobs alone, even if they have no attempts left" do
+      jobs =
+        for state <- ["completed", "cancelled", "discarded"] do
+          job_fixture_in_state(state, attempt: 1, max_attempts: 1)
+        end
+
+      PreJobStartupTasks.init(%{})
+
+      assert Enum.map(jobs, &Repo.reload!(&1).state) == ["completed", "cancelled", "discarded"]
+      assert Enum.all?(jobs, &(Repo.reload!(&1).errors == []))
+    end
+
+    test "discards scheduled and retryable jobs that have no attempts left" do
+      scheduled_job = job_fixture_in_state("scheduled", attempt: 1, max_attempts: 1)
+      retryable_job = job_fixture_in_state("retryable", attempt: 2, max_attempts: 1)
+
+      PreJobStartupTasks.init(%{})
+
+      assert Repo.reload!(scheduled_job).state == "discarded"
+      assert Repo.reload!(retryable_job).state == "discarded"
+    end
+
+    test "adds the discard reason after a job's existing errors" do
+      job = job_fixture_in_state("executing", attempt: 1, max_attempts: 1)
+      original_error = %{"attempt" => 1, "at" => "2025-01-01T00:00:00Z", "error" => "original error"}
+      Repo.update_all(where(Oban.Job, id: ^job.id), set: [errors: [original_error]])
+
+      PreJobStartupTasks.init(%{})
+
+      assert [^original_error, %{"error" => error}] = Repo.reload!(job).errors
+      assert error =~ "app stopped while this job was running"
+    end
+
     # It's only attempted once, and only one directory update per source can be queued or running
     test "lets a source's directory update that was running be queued again" do
       source = source_fixture()
@@ -95,6 +169,17 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
       PreJobStartupTasks.init(%{})
 
       assert File.exists?(filepath)
+    end
+
+    # It's where browser session credentials go
+    test "makes a new cookie file readable only by the app's user" do
+      base_dir = Application.get_env(:pinchflat, :extras_directory)
+      filepath = Path.join(base_dir, "cookies.txt")
+      File.rm(filepath)
+
+      PreJobStartupTasks.init(%{})
+
+      assert File.stat!(filepath).mode == 0o100600
     end
 
     test "creates a blank yt-dlp config file" do
@@ -131,6 +216,30 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
       PreJobStartupTasks.init(%{})
 
       assert File.stat!(filepath).mode == 0o100755
+    end
+  end
+
+  describe "create_blank_yt_dlp_files and create_blank_user_script_file" do
+    test "leave the user's existing files alone" do
+      base_dir = Application.get_env(:pinchflat, :extras_directory)
+
+      files = [
+        {Path.join(base_dir, "cookies.txt"), "cookie data", 0o644},
+        {Path.join([base_dir, "yt-dlp-configs", "base-config.txt"]), "--no-mtime", 0o644},
+        {Path.join([base_dir, "user-scripts", "lifecycle"]), "#!/bin/sh\necho hi\n", 0o700}
+      ]
+
+      for {filepath, contents, mode} <- files do
+        FilesystemUtils.write_p!(filepath, contents)
+        File.chmod!(filepath, mode)
+      end
+
+      PreJobStartupTasks.init(%{})
+
+      for {filepath, contents, mode} <- files do
+        assert File.read!(filepath) == contents
+        assert File.stat!(filepath).mode == 0o100000 + mode
+      end
     end
   end
 

@@ -10,6 +10,9 @@ defmodule Pinchflat.HTTP.HTTPClient do
 
   @behaviour HTTPBehaviour
 
+  # `:httpc` never times out by default, so a server that stops responding would hang the caller
+  @default_http_options [timeout: 10_000, connect_timeout: 5_000]
+
   @doc """
   Makes a GET request to the given URL and returns the response.
 
@@ -17,9 +20,9 @@ defmodule Pinchflat.HTTP.HTTPClient do
   consumers are tested with the Mox mock instead.
 
   Additional Opts:
-    - :http_options - HTTP options for `:httpc.request/4`, such as `:timeout` and
-      `:connect_timeout` (which otherwise never time out). All other opts are
-      passed to `:httpc.request/4` as its options, except `:body_format`: the body
+    - :http_options - HTTP options for `:httpc.request/4`. The `:timeout` (10 seconds)
+      and `:connect_timeout` (5 seconds) defaults can be replaced here. All other opts
+      are passed to `:httpc.request/4` as its options, except `:body_format`: the body
       is always returned as the binary that was received.
 
   Returns {:ok, String.t()} | {:error, String.t()}
@@ -28,6 +31,7 @@ defmodule Pinchflat.HTTP.HTTPClient do
   def get(url, headers \\ [], opts \\ []) do
     headers = parse_headers(headers)
     {http_options, opts} = Keyword.pop(opts, :http_options, [])
+    http_options = Keyword.merge(@default_http_options, http_options)
     # The default (a charlist of the body's bytes) would double-encode non-ASCII UTF-8 in `to_string/1`
     opts = Keyword.put(opts, :body_format, :binary)
 

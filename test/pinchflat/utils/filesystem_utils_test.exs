@@ -152,6 +152,67 @@ defmodule Pinchflat.Utils.FilesystemUtilsTest do
     end
   end
 
+  describe "write_private_file/2" do
+    test "creates the file and its directories, readable only by its owner" do
+      filepath = Path.join([tmpfile_directory(), "private-#{System.unique_integer([:positive])}", "file.txt"])
+
+      assert :ok = FilesystemUtils.write_private_file(filepath, "secret")
+
+      assert File.read!(filepath) == "secret"
+      assert File.stat!(filepath).mode == 0o100600
+    end
+
+    test "replaces an existing file's contents and makes it readable only by its owner" do
+      filepath = FilesystemUtils.generate_metadata_tmpfile(:txt)
+      File.write!(filepath, "old secret")
+      File.chmod!(filepath, 0o644)
+
+      assert :ok = FilesystemUtils.write_private_file(filepath, "new secret")
+
+      assert File.read!(filepath) == "new secret"
+      assert File.stat!(filepath).mode == 0o100600
+    end
+  end
+
+  describe "ensure_private_directory/2" do
+    test "creates the directory and its parents, accessible only by the current user" do
+      directory = Path.join([tmpfile_directory(), "private-#{System.unique_integer([:positive])}", "nested"])
+
+      assert :ok = FilesystemUtils.ensure_private_directory(directory)
+
+      assert File.stat!(directory).mode == 0o40700
+    end
+
+    test "makes an existing directory of the current user's accessible only by them, keeping its contents" do
+      directory = directory_fixture(0o777)
+      File.write!(Path.join(directory, "file.txt"), "contents")
+
+      assert :ok = FilesystemUtils.ensure_private_directory(directory)
+
+      assert File.stat!(directory).mode == 0o40700
+      assert File.read!(Path.join(directory, "file.txt")) == "contents"
+    end
+
+    # Its owner could always change it back, or put files in it, so it's left as-is
+    test "returns an error for a directory owned by another user" do
+      directory = directory_fixture(0o777)
+      owner_uid = File.stat!(directory).uid
+      other_uid = owner_uid + 1
+
+      assert {:error, {:owned_by, ^owner_uid}} = FilesystemUtils.ensure_private_directory(directory, other_uid)
+
+      assert File.stat!(directory).mode == 0o40777
+    end
+
+    test "returns an error if something else is in the directory's place" do
+      filepath = FilesystemUtils.generate_metadata_tmpfile(:txt)
+
+      assert {:error, _} = FilesystemUtils.ensure_private_directory(filepath)
+
+      assert File.regular?(filepath)
+    end
+  end
+
   describe "delete_file_and_remove_empty_directories/1" do
     test "deletes file at the provided filepath" do
       filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
@@ -301,5 +362,13 @@ defmodule Pinchflat.Utils.FilesystemUtilsTest do
 
   defp tmpfile_directory do
     Application.get_env(:pinchflat, :tmpfile_directory)
+  end
+
+  defp directory_fixture(mode) do
+    directory = Path.join(tmpfile_directory(), "private-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(directory)
+    File.chmod!(directory, mode)
+
+    directory
   end
 end

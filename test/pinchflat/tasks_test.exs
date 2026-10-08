@@ -8,6 +8,7 @@ defmodule Pinchflat.TasksTest do
   alias Pinchflat.Tasks
   alias Pinchflat.Tasks.Task
   alias Pinchflat.JobFixtures.TestJobWorker
+  alias Pinchflat.FastIndexing.FastIndexingWorker
 
   @invalid_attrs %{job_id: nil}
 
@@ -65,6 +66,15 @@ defmodule Pinchflat.TasksTest do
       task = task_fixture(source_id: source.id)
 
       assert Tasks.list_tasks_for(source, nil) == [task]
+    end
+
+    test "only matches whole worker names" do
+      source = source_fixture()
+      {:ok, job} = Oban.insert(FastIndexingWorker.new(%{id: source.id}))
+      task = task_fixture(source_id: source.id, job_id: job.id)
+
+      assert Tasks.list_tasks_for(source, "IndexingWorker") == []
+      assert Tasks.list_tasks_for(source, "FastIndexingWorker") == [task]
     end
   end
 
@@ -136,6 +146,16 @@ defmodule Pinchflat.TasksTest do
       source = source_fixture()
 
       assert {:error, %Ecto.Changeset{}} = Tasks.create_job_with_task(%Ecto.Changeset{}, source)
+    end
+
+    test "doesn't leave a job behind if the task can't be created" do
+      source = source_fixture()
+      # The task can't reference a source that no longer exists
+      Repo.delete!(source)
+
+      assert_raise Ecto.ConstraintError, fn -> Tasks.create_job_with_task(TestJobWorker.new(%{}), source) end
+
+      refute_enqueued(worker: TestJobWorker)
     end
   end
 
@@ -259,6 +279,29 @@ defmodule Pinchflat.TasksTest do
       assert :ok = Tasks.delete_pending_tasks_for(source, nil, include_executing: true)
       assert_raise Ecto.NoResultsError, fn -> Repo.reload!(task) end
     end
+
+    test "deletes the tasks of scheduled and retryable jobs, cancelling the jobs" do
+      source = source_fixture()
+      tasks = Enum.map(["scheduled", "retryable"], &task_fixture_in_state(source, &1))
+
+      assert :ok = Tasks.delete_pending_tasks_for(source)
+
+      for task <- tasks do
+        assert_raise Ecto.NoResultsError, fn -> Repo.reload!(task) end
+        assert Repo.get!(Oban.Job, task.job_id).state == "cancelled"
+      end
+    end
+
+    test "keeps the tasks of finished jobs, even when including executing ones" do
+      source = source_fixture()
+      tasks = Enum.map(["completed", "discarded"], &task_fixture_in_state(source, &1))
+
+      assert :ok = Tasks.delete_pending_tasks_for(source, nil, include_executing: true)
+
+      for task <- tasks do
+        assert Repo.reload!(task)
+      end
+    end
   end
 
   describe "change_task/1" do
@@ -266,5 +309,12 @@ defmodule Pinchflat.TasksTest do
       task = task_fixture()
       assert %Ecto.Changeset{} = Tasks.change_task(task)
     end
+  end
+
+  defp task_fixture_in_state(source, state) do
+    task = task_fixture(source_id: source.id)
+    Repo.update_all(where(Oban.Job, id: ^task.job_id), set: [state: state])
+
+    task
   end
 end

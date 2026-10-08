@@ -111,17 +111,6 @@ defmodule Pinchflat.FastIndexing.YoutubeApiTest do
       assert {:ok, _} = YoutubeApi.get_recent_media_ids(source)
     end
 
-    test "sets request timeouts so a stalled response can't hang the caller", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url, _headers, opts ->
-        assert is_integer(opts[:http_options][:timeout])
-        assert is_integer(opts[:http_options][:connect_timeout])
-
-        {:ok, "{}"}
-      end)
-
-      assert {:ok, _} = YoutubeApi.get_recent_media_ids(source)
-    end
-
     test "replaces channel IDs with playlist IDs if needed" do
       source = source_fixture(collection_id: "UC_ABC123")
 
