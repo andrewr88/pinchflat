@@ -46,6 +46,7 @@ defmodule PinchflatWeb.MediaProfiles.MediaProfileController do
             subquery(
               from s in Source,
                 where: s.media_profile_id == parent_as(:media_profile).id,
+                where: is_nil(s.marked_for_deletion_at),
                 select: count(s.id)
             )
         }
@@ -92,9 +93,11 @@ defmodule PinchflatWeb.MediaProfiles.MediaProfileController do
   def show(conn, %{"id" => id}) do
     media_profile = Profiles.get_media_profile!(id)
 
+    # Sources that are being deleted are hidden, like on the sources page
     sources =
       SourcesQuery.new()
       |> where(^SourcesQuery.for_media_profile(media_profile))
+      |> where([s], is_nil(s.marked_for_deletion_at))
       |> order_by(asc: :custom_name)
       |> Repo.all()
 

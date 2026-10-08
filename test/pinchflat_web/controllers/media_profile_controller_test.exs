@@ -1,6 +1,7 @@
 defmodule PinchflatWeb.MediaProfileControllerTest do
   use PinchflatWeb.ConnCase
 
+  import Pinchflat.SourcesFixtures
   import Pinchflat.ProfilesFixtures
 
   alias Pinchflat.Repo
@@ -34,6 +35,49 @@ defmodule PinchflatWeb.MediaProfileControllerTest do
       profile = media_profile_fixture(marked_for_deletion_at: DateTime.utc_now())
       conn = get(conn, ~p"/media_profiles")
       refute html_response(conn, 200) =~ profile.name
+    end
+
+    test "doesn't count sources that are marked for deletion", %{conn: conn} do
+      profile = media_profile_fixture()
+      source_fixture(media_profile_id: profile.id)
+      source_fixture(media_profile_id: profile.id, marked_for_deletion_at: now())
+
+      html = conn |> get(~p"/media_profiles") |> html_response(200)
+
+      assert [source_count] =
+               html
+               |> Floki.parse_document!()
+               |> Floki.find(~s(a[href="/media_profiles/#{profile.id}/#tab-sources"]))
+
+      assert String.trim(Floki.text(source_count)) == "1"
+    end
+  end
+
+  describe "show media_profile" do
+    test "lists the profile's sources, except those marked for deletion", %{conn: conn} do
+      profile = media_profile_fixture()
+      source = source_fixture(media_profile_id: profile.id, custom_name: "Source in use")
+      source_fixture(media_profile_id: profile.id, custom_name: "Source being deleted", marked_for_deletion_at: now())
+
+      html = conn |> get(~p"/media_profiles/#{profile}") |> html_response(200)
+
+      assert html =~ ~s(href="/sources/#{source.id}")
+      assert html =~ "Source in use"
+      refute html =~ "Source being deleted"
+    end
+
+    # The name can be anything, so it mustn't be able to break out of the copy button's JavaScript
+    test "copies the profile's JSON without putting it in the click handler", %{conn: conn} do
+      profile = media_profile_fixture(name: ~s|x`${alert(1)}` '"<>|)
+
+      html = conn |> get(~p"/media_profiles/#{profile}") |> html_response(200)
+      [copy_json] = html |> Floki.parse_document!() |> Floki.find("[data-json]")
+      [click_handler] = Floki.attribute(copy_json, "x-on:click")
+
+      assert click_handler =~ "$el.dataset.json"
+      refute click_handler =~ "alert"
+      assert Floki.attribute(copy_json, "data-json") == [pretty_json(Repo.reload!(profile))]
+      assert html =~ ~s|x`${alert(1)}` &#39;\\&quot;&lt;&gt;|
     end
   end
 
@@ -109,6 +153,36 @@ defmodule PinchflatWeb.MediaProfileControllerTest do
     } do
       conn = get(conn, ~p"/media_profiles/#{media_profile}/edit")
       assert html_response(conn, 200) =~ "Editing \"#{media_profile.name}\""
+    end
+
+    # Unchecked checkboxes aren't submitted, so without it unchecking every category would keep the old ones
+    test "submits a blank SponsorBlock category alongside the checkboxes", %{conn: conn, media_profile: media_profile} do
+      html = conn |> get(~p"/media_profiles/#{media_profile}/edit") |> html_response(200)
+
+      assert [hidden_input] =
+               html
+               |> Floki.parse_document!()
+               |> Floki.find(~s(input[type="hidden"][name="media_profile[sponsorblock_categories][]"]))
+
+      assert Floki.attribute(hidden_input, "value") == [""]
+    end
+
+    # JS-only: the categories are shown based on the `sponsorblockBehaviour` variable, so a preset has to
+    # set it rather than the select's value (which doesn't update the variable)
+    test "has SponsorBlock presets set the variable the categories' visibility depends on", %{
+      conn: conn,
+      media_profile: media_profile
+    } do
+      html = conn |> get(~p"/media_profiles/#{media_profile}/edit") |> html_response(200)
+
+      assert [x_init] =
+               html
+               |> Floki.parse_document!()
+               |> Floki.find(~s(select[name="media_profile[sponsorblock_behaviour]"]))
+               |> Floki.attribute("x-init")
+
+      assert x_init =~ "$watch('selectedPreset', p => p && (sponsorblockBehaviour = presets[p]))"
+      refute x_init =~ "$el.value = presets[p]"
     end
   end
 
@@ -192,6 +266,15 @@ defmodule PinchflatWeb.MediaProfileControllerTest do
       assert updated_media_profile.name == "some updated name"
       assert updated_media_profile.marked_for_deletion_at == nil
     end
+
+    # The form submits a blank category alongside the checkboxes, so this is what unchecking them all sends
+    test "clears the SponsorBlock categories when none are checked", %{conn: conn} do
+      media_profile = media_profile_fixture(sponsorblock_categories: ["sponsor", "intro"])
+
+      put(conn, ~p"/media_profiles/#{media_profile}", media_profile: %{"sponsorblock_categories" => [""]})
+
+      assert Repo.reload!(media_profile).sponsorblock_categories == []
+    end
   end
 
   describe "delete media_profile in all cases" do
@@ -249,5 +332,12 @@ defmodule PinchflatWeb.MediaProfileControllerTest do
     |> List.flatten()
     |> Enum.uniq()
     |> Enum.sort()
+  end
+
+  # What the actions dropdown's "Copy JSON" copies
+  defp pretty_json(record) do
+    record
+    |> Phoenix.json_library().encode!()
+    |> Jason.Formatter.pretty_print()
   end
 end

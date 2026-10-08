@@ -57,10 +57,20 @@ defmodule PinchflatWeb.Sources.SourceHTML do
     url(conn, ~p"/sources/opml.xml?#{[route_token: Settings.get!(:route_token)]}")
   end
 
+  # JSON, which is also a JavaScript object, for use in Alpine expressions
   def output_path_template_override_placeholders(media_profiles) do
     media_profiles
     |> Enum.map(&{&1.id, &1.output_path_template})
     |> Map.new()
+    |> Phoenix.json_library().encode!()
+  end
+
+  @doc """
+  Returns the value as a JavaScript string for use in an Alpine expression. `nil` is an empty string.
+  """
+  def js_string(value) do
+    value
+    |> to_string()
     |> Phoenix.json_library().encode!()
   end
 

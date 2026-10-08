@@ -593,7 +593,7 @@ defmodule Pinchflat.MediaTest do
 
     test "adds a matching_search_term attribute with the relevant text" do
       assert [res] = Media.search("quick")
-      assert String.contains?(res.matching_search_term, "The [PF_HIGHLIGHT]quick[/PF_HIGHLIGHT] brown fox")
+      assert String.contains?(res.matching_search_term, "The \x02quick\x03 brown fox")
     end
 
     test "doesn't set matching_search_term to nil if one of the attributes we search on is null" do

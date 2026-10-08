@@ -23,6 +23,51 @@ defmodule PinchflatWeb.MediaItemControllerTest do
 
       assert html_response(conn, 200) =~ "#{media_item.title}"
     end
+
+    # The title comes from the remote source, so it mustn't be able to break out of the copy button's JavaScript
+    test "copies the media item's JSON without putting it in the click handler", %{conn: conn} do
+      media_item = media_item_fixture(%{title: ~s|x`${alert(1)}` '"<>|})
+
+      html = conn |> get(~p"/sources/#{media_item.source_id}/media/#{media_item}") |> html_response(200)
+      [copy_json] = html |> Floki.parse_document!() |> Floki.find("[data-json]")
+      [click_handler] = Floki.attribute(copy_json, "x-on:click")
+
+      assert click_handler =~ "$el.dataset.json"
+      refute click_handler =~ media_item.media_id
+      refute click_handler =~ "alert"
+      assert Floki.attribute(copy_json, "data-json") == [pretty_json(Repo.reload!(media_item))]
+      assert html =~ ~s|x`${alert(1)}` &#39;\\&quot;&lt;&gt;|
+    end
+
+    test "previews the media with its MIME type", %{conn: conn} do
+      media_item = media_item_with_attachments()
+      webm_filepath = String.replace_suffix(media_item.media_filepath, ".mp4", ".WEBM")
+      File.rename!(media_item.media_filepath, webm_filepath)
+      Repo.update!(Ecto.Changeset.change(media_item, media_filepath: webm_filepath))
+
+      html = conn |> get(~p"/sources/#{media_item.source_id}/media/#{media_item}") |> html_response(200)
+
+      assert [source] = html |> Floki.parse_document!() |> Floki.find("video source")
+      assert Floki.attribute(source, "type") == ["video/webm"]
+    end
+
+    test "previews audio in an audio player", %{conn: conn} do
+      media_item = media_item_with_attachments()
+      flac_filepath = String.replace_suffix(media_item.media_filepath, ".mp4", ".flac")
+      File.rename!(media_item.media_filepath, flac_filepath)
+      Repo.update!(Ecto.Changeset.change(media_item, media_filepath: flac_filepath))
+
+      html = conn |> get(~p"/sources/#{media_item.source_id}/media/#{media_item}") |> html_response(200)
+      document = Floki.parse_document!(html)
+
+      assert [] = Floki.find(document, "video")
+      assert [source] = Floki.find(document, "audio source")
+      assert Floki.attribute(source, "type") == ["audio/flac"]
+    end
+
+    test "returns 404 if the media item doesn't exist", %{conn: conn, media_item: media_item} do
+      assert_error_sent 404, fn -> get(conn, ~p"/sources/#{media_item.source_id}/media/0") end
+    end
   end
 
   describe "edit media" do
@@ -32,6 +77,10 @@ defmodule PinchflatWeb.MediaItemControllerTest do
       conn = get(conn, ~p"/sources/#{media_item.source_id}/media/#{media_item}/edit")
 
       assert html_response(conn, 200) =~ "Editing"
+    end
+
+    test "returns 404 if the media item doesn't exist", %{conn: conn, media_item: media_item} do
+      assert_error_sent 404, fn -> get(conn, ~p"/sources/#{media_item.source_id}/media/0/edit") end
     end
   end
 
@@ -127,6 +176,20 @@ defmodule PinchflatWeb.MediaItemControllerTest do
 
       assert media_item.prevent_download
     end
+
+    test "succeeds when the media item has no files", %{conn: conn} do
+      media_item = media_item_fixture(%{media_filepath: nil})
+
+      conn = delete(conn, ~p"/sources/#{media_item.source_id}/media/#{media_item.id}?prevent_download=true")
+
+      assert redirected_to(conn) == ~p"/sources/#{media_item.source_id}"
+      assert conn.assigns[:flash]["info"] == "Files deleted successfully."
+      assert Repo.reload!(media_item).prevent_download
+    end
+
+    test "returns 404 if the media item doesn't exist", %{conn: conn, media_item: media_item} do
+      assert_error_sent 404, fn -> delete(conn, ~p"/sources/#{media_item.source_id}/media/0") end
+    end
   end
 
   describe "force_download" do
@@ -160,6 +223,13 @@ defmodule PinchflatWeb.MediaItemControllerTest do
       conn = post(conn, ~p"/sources/#{media_item.source_id}/media/#{media_item.id}/force_download")
 
       assert redirected_to(conn) == ~p"/sources/#{media_item.source_id}/media/#{media_item.id}"
+    end
+
+    test "returns 404 if the media item doesn't exist", %{conn: conn} do
+      media_item = media_item_fixture()
+
+      assert_error_sent 404, fn -> post(conn, ~p"/sources/#{media_item.source_id}/media/0/force_download") end
+      assert [] = all_enqueued(worker: MediaDownloadWorker)
     end
   end
 
@@ -421,5 +491,12 @@ defmodule PinchflatWeb.MediaItemControllerTest do
     build_conn()
     |> put_req_header("range", range)
     |> get(~p"/media/#{media_item.uuid}/stream")
+  end
+
+  # What the actions dropdown's "Copy JSON" copies
+  defp pretty_json(record) do
+    record
+    |> Phoenix.json_library().encode!()
+    |> Jason.Formatter.pretty_print()
   end
 end

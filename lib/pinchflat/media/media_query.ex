@@ -181,7 +181,10 @@ defmodule Pinchflat.Media.MediaQuery do
   end
 
   # This needs to be a non-dynamic query because it alone should control things like
-  # ordering and `snippets` for full-text search
+  # ordering and `snippets` for full-text search.
+  #
+  # The matches in the snippets are wrapped in the STX and ETX control characters (char(2) and char(3)).
+  # Unlike a text marker (eg: `[HIGHLIGHT]`), the title or description won't contain them
   def matching_search_term(query, nil), do: query
 
   def matching_search_term(query, term) do
@@ -193,9 +196,9 @@ defmodule Pinchflat.Media.MediaQuery do
       select_merge: %{
         matching_search_term:
           fragment("""
-            coalesce(snippet(media_items_search_index, 0, '[PF_HIGHLIGHT]', '[/PF_HIGHLIGHT]', '...', 20), '') ||
+            coalesce(snippet(media_items_search_index, 0, char(2), char(3), '...', 20), '') ||
             ' ' ||
-            coalesce(snippet(media_items_search_index, 1, '[PF_HIGHLIGHT]', '[/PF_HIGHLIGHT]', '...', 20), '')
+            coalesce(snippet(media_items_search_index, 1, char(2), char(3), '...', 20), '')
           """)
       },
       order_by: [desc: fragment("rank")]

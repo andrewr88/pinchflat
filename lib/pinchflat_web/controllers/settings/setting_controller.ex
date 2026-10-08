@@ -4,6 +4,18 @@ defmodule PinchflatWeb.Settings.SettingController do
   alias Pinchflat.Settings
   alias Pinchflat.Utils.FilesystemUtils
 
+  # Only the settings form's fields are taken from the request. The app sets the others itself,
+  # eg: the installed yt-dlp and apprise versions
+  @form_fields ~w(
+    apprise_server
+    youtube_api_key
+    extractor_sleep_interval_seconds
+    download_throughput_limit
+    restrict_filenames
+    video_codec_preference
+    audio_codec_preference
+  )
+
   def show(conn, _params) do
     setting = Settings.record()
     changeset = Settings.change_setting(setting)
@@ -14,7 +26,7 @@ defmodule PinchflatWeb.Settings.SettingController do
   def update(conn, %{"setting" => setting_params}) do
     setting = Settings.record()
 
-    case Settings.update_setting(setting, setting_params) do
+    case Settings.update_setting(setting, Map.take(setting_params, @form_fields)) do
       {:ok, _} ->
         conn
         |> put_flash(:info, "Settings updated successfully.")

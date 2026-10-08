@@ -27,11 +27,13 @@ defmodule Pinchflat.Lifecycle.Notifications.CommandRunner do
     endpoints = List.wrap(endpoints)
     default_opts = [:verbose]
     parsed_opts = CliUtils.parse_options(default_opts ++ command_opts)
+    # `--` ends the options so a server that looks like one (eg: `--config=<url>`) is still taken as a server
+    args = parsed_opts ++ ["--" | endpoints]
     # Server URLs often embed credentials (tokens, passwords, etc.) so keep them out of the logs
-    logging_arg_override = Enum.join(parsed_opts ++ ["[servers suppressed]"], " ")
+    logging_arg_override = Enum.join(parsed_opts ++ ["--", "[servers suppressed]"], " ")
 
     {output, exit_code} =
-      CliUtils.wrap_cmd(backend_executable(), parsed_opts ++ endpoints, [], logging_arg_override: logging_arg_override)
+      CliUtils.wrap_cmd(backend_executable(), args, [], logging_arg_override: logging_arg_override)
 
     case exit_code do
       0 -> {:ok, String.trim(output)}

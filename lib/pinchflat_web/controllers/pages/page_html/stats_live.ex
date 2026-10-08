@@ -74,10 +74,17 @@ defmodule Pinchflat.Pages.StatsLive do
 
   defp fetch_stats do
     downloaded_media_items = where(MediaQuery.new(), ^MediaQuery.downloaded())
+    # Like their index pages, this leaves out media profiles and sources that are being deleted
+    media_profiles = where(MediaProfile, [mp], is_nil(mp.marked_for_deletion_at))
+
+    sources =
+      from s in Source,
+        inner_join: mp in assoc(s, :media_profile),
+        where: is_nil(s.marked_for_deletion_at) and is_nil(mp.marked_for_deletion_at)
 
     %{
-      media_profile_count: Repo.aggregate(MediaProfile, :count, :id),
-      source_count: Repo.aggregate(Source, :count, :id),
+      media_profile_count: Repo.aggregate(media_profiles, :count, :id),
+      source_count: Repo.aggregate(sources, :count, :id),
       media_item_size: Repo.aggregate(downloaded_media_items, :sum, :media_size_bytes),
       media_item_count: Repo.aggregate(downloaded_media_items, :count, :id)
     }

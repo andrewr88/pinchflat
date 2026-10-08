@@ -71,6 +71,19 @@ defmodule Pinchflat.ProfilesTest do
 
       assert media_profile == Profiles.get_media_profile!(media_profile.id)
     end
+
+    # The form submits a blank category so that unchecking all of them clears them
+    test "ignores blank SponsorBlock categories" do
+      media_profile = media_profile_fixture(sponsorblock_categories: ["sponsor", "intro"])
+
+      assert {:ok, %MediaProfile{sponsorblock_categories: []}} =
+               Profiles.update_media_profile(media_profile, %{sponsorblock_categories: [""]})
+
+      assert {:ok, %MediaProfile{sponsorblock_categories: ["outro"]}} =
+               Profiles.update_media_profile(media_profile, %{sponsorblock_categories: ["", "outro"]})
+
+      assert Profiles.get_media_profile!(media_profile.id).sponsorblock_categories == ["outro"]
+    end
   end
 
   describe "delete_media_profile/2" do

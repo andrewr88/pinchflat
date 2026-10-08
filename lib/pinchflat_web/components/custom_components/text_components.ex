@@ -70,9 +70,13 @@ defmodule PinchflatWeb.CustomComponents.TextComponents do
   def render_description(assigns) do
     formatted_text =
       Regex.split(~r{https?://\S+}, assigns.text, include_captures: true)
-      |> Enum.map(fn
-        "http" <> _ = url -> {:url, url}
-        text -> Regex.split(~r{\n}, text, include_captures: true, trim: true)
+      |> Enum.map(fn chunk ->
+        # The text between URLs can also start with "http" (eg: "http server tips")
+        if Regex.match?(~r{\Ahttps?://\S+\z}, chunk) do
+          {:url, chunk}
+        else
+          Regex.split(~r{\n}, chunk, include_captures: true, trim: true)
+        end
       end)
 
     assigns = Map.put(assigns, :text, formatted_text)

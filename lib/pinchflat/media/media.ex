@@ -85,7 +85,8 @@ defmodule Pinchflat.Media do
 
   @doc """
   Returns a list of media_items that match the search term. Adds a `matching_search_term`
-  virtual field to the result set.
+  virtual field to the result set: snippets of the title and description with the matches
+  wrapped in the STX and ETX control characters (eg: "The \\x02quick\\x03 brown fox").
 
   Has explit handling for blank search terms because SQLite doesn't like empty MATCH clauses.
 

@@ -139,7 +139,7 @@ defmodule Pinchflat.Pages.HistoryTableLive do
     MediaQuery.new()
     |> MediaQuery.require_assoc(:media_profile)
     |> where(^dynamic(^MediaQuery.downloaded()))
-    |> order_by(desc: :id)
+    |> order_by(desc: :media_downloaded_at, desc: :id)
   end
 
   defp format_datetime(nil), do: ""

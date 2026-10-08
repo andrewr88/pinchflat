@@ -77,6 +77,19 @@ defmodule PinchflatWeb.SourceControllerTest do
       assert html_response(conn, 200) =~ "Profile in use"
       refute html_response(conn, 200) =~ "Profile being deleted"
     end
+
+    # They're in the form's JavaScript, so quotes and backslashes mustn't break out of their strings
+    test "puts the media profiles' output templates in the form as a JavaScript object", %{conn: conn} do
+      media_profile =
+        media_profile_fixture(output_path_template: ~S|/{{ title }} it's "a" \ \' '); alert(1); ('.{{ ext }}|)
+
+      document = conn |> get(~p"/sources/new") |> html_response(200) |> Floki.parse_document!()
+      [x_data] = document |> Floki.find("section[x-data*=placeholders]") |> Floki.attribute("x-data")
+      [_, placeholders] = Regex.run(~r/placeholders: (.*),\s*inputValue: null/s, x_data)
+
+      assert {:ok, %{} = placeholders} = Phoenix.json_library().decode(placeholders)
+      assert placeholders[to_string(media_profile.id)] == media_profile.output_path_template
+    end
   end
 
   describe "create source" do
@@ -176,6 +189,22 @@ defmodule PinchflatWeb.SourceControllerTest do
       conn = get(conn, ~p"/sources/#{source}")
       refute html_response(conn, 200) =~ "Last directory update failed"
     end
+
+    # The source's details come from the remote source, so they mustn't be able to break out of the
+    # copy button's JavaScript
+    test "copies the source's JSON without putting it in the click handler", %{conn: conn} do
+      source = source_fixture(custom_name: ~s|x`${alert(1)}` '"<>|)
+
+      html = conn |> get(~p"/sources/#{source}") |> html_response(200)
+      [copy_json] = html |> Floki.parse_document!() |> Floki.find("[data-json]")
+      [click_handler] = Floki.attribute(copy_json, "x-on:click")
+
+      assert click_handler =~ "$el.dataset.json"
+      refute click_handler =~ source.collection_id
+      refute click_handler =~ "alert"
+      assert Floki.attribute(copy_json, "data-json") == [pretty_json(Repo.reload!(source))]
+      assert html =~ ~s|x`${alert(1)}` &#39;\\&quot;&lt;&gt;|
+    end
   end
 
   describe "edit source" do
@@ -194,6 +223,15 @@ defmodule PinchflatWeb.SourceControllerTest do
 
       assert html_response(conn, 200) =~ "Profile in use"
       refute html_response(conn, 200) =~ "Profile being deleted"
+    end
+
+    test "puts the download cutoff date in the form's JavaScript as a string", %{conn: conn} do
+      source = source_fixture(download_cutoff_date: "2021-01-01")
+
+      html = conn |> get(~p"/sources/#{source}/edit") |> html_response(200)
+
+      assert cutoff_date_scripts(html) ==
+               {~s({ cutoffDate: "2021-01-01" }), ~s(cutoffDate = $event.target.value || "2021-01-01")}
     end
   end
 
@@ -261,6 +299,17 @@ defmodule PinchflatWeb.SourceControllerTest do
                title_filter_regex: "(?i)^How to Bike$",
                output_path_template_override: "/{{ title }}.{{ ext }}"
              } = Repo.reload!(source)
+    end
+
+    # An invalid date is shown again as it was entered, so it mustn't be able to break out of the form's JavaScript
+    test "keeps an invalid download cutoff date inside the form's JavaScript strings", %{conn: conn, source: source} do
+      cutoff_date = ~S|x' + alert(1) + '" \ end|
+      js_string = Phoenix.json_library().encode!(cutoff_date)
+
+      conn = put(conn, ~p"/sources/#{source}", source: %{download_cutoff_date: cutoff_date})
+
+      assert cutoff_date_scripts(html_response(conn, 200)) ==
+               {"{ cutoffDate: #{js_string} }", "cutoffDate = $event.target.value || #{js_string}"}
     end
 
     # The app serves the files at these paths, and moves or deletes them along with the source
@@ -458,6 +507,23 @@ defmodule PinchflatWeb.SourceControllerTest do
     @source_path_fields
     |> Map.new(&{to_string(&1), filepath})
     |> Map.put("series_directory", Path.dirname(filepath))
+  end
+
+  # The Alpine scripts that hold the download cutoff date: {the x-data, the preset's x-on:change}
+  defp cutoff_date_scripts(html) do
+    document = Floki.parse_document!(html)
+    [x_data] = document |> Floki.find("section[x-data*=cutoffDate]") |> Floki.attribute("x-data")
+    preset_select = Floki.find(document, ~s(select[name="download_cutoff_date_preset"]))
+    [x_on_change] = Floki.attribute(preset_select, "x-on:change")
+
+    {x_data, x_on_change}
+  end
+
+  # What the actions dropdown's "Copy JSON" copies
+  defp pretty_json(record) do
+    record
+    |> Phoenix.json_library().encode!()
+    |> Jason.Formatter.pretty_print()
   end
 
   # The fields of a form's inputs, eg: "custom_name" for `name="source[custom_name]"`

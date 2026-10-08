@@ -295,7 +295,7 @@
           x-model="sponsorblockBehaviour"
           x-init="
             sponsorblockBehaviour = $el.value
-            $watch('selectedPreset', p => p && ($el.value = presets[p]))
+            $watch('selectedPreset', p => p && (sponsorblockBehaviour = presets[p]))
           "
         />
       </section>

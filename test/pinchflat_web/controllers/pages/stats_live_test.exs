@@ -3,8 +3,10 @@ defmodule PinchflatWeb.Pages.StatsLiveTest do
 
   import Phoenix.LiveViewTest
   import Pinchflat.MediaFixtures
+  import Pinchflat.SourcesFixtures
   import Pinchflat.ProfilesFixtures
 
+  alias Pinchflat.Profiles
   alias Pinchflat.Pages.StatsLive
 
   describe "initial rendering" do
@@ -18,6 +20,22 @@ defmodule PinchflatWeb.Pages.StatsLiveTest do
 
       # Each media item fixture also creates a source and a media profile
       assert stats_text(html) == "Media Profiles 4 Sources 3 Downloads 2 Library Size 2.0 KB"
+    end
+
+    # They're hidden everywhere else while they're being deleted
+    test "doesn't count media profiles and sources that are being deleted", %{conn: conn} do
+      media_profile = media_profile_fixture()
+      _source = source_fixture(media_profile_id: media_profile.id)
+      _source_being_deleted = source_fixture(media_profile_id: media_profile.id, marked_for_deletion_at: now())
+
+      media_profile_being_deleted = media_profile_fixture()
+      _source_on_profile_being_deleted = source_fixture(media_profile_id: media_profile_being_deleted.id)
+      {:ok, _} = Profiles.update_media_profile(media_profile_being_deleted, %{marked_for_deletion_at: now()})
+
+      {:ok, _view, html} = live_isolated(conn, StatsLive, session: %{})
+
+      # Each source fixture also creates a media profile, which is why there are 4 of them
+      assert stats_text(html) == "Media Profiles 4 Source 1 Downloads 0 Library Size 0.0 B"
     end
   end
 

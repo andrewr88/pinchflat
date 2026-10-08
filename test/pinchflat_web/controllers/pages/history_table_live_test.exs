@@ -33,6 +33,24 @@ defmodule PinchflatWeb.Pages.HistoryTableLiveTest do
       assert html =~ pending_media_item.title
       refute html =~ downloaded_media_item.title
     end
+
+    test "shows the most recently downloaded media first when downloaded", %{conn: conn, source: source} do
+      downloaded_last = media_item_fixture(source_id: source.id, media_downloaded_at: now())
+      downloaded_first = media_item_fixture(source_id: source.id, media_downloaded_at: now_minus(2, :days))
+      downloaded_second = media_item_fixture(source_id: source.id, media_downloaded_at: now_minus(1, :day))
+
+      {:ok, _view, html} = live_isolated(conn, HistoryTableLive, session: create_session("downloaded"))
+
+      assert titles(html) == [downloaded_last.title, downloaded_second.title, downloaded_first.title]
+    end
+
+    test "shows the most recently indexed media first when pending", %{conn: conn, source: source} do
+      [first, second, third] = Enum.map(1..3, fn _ -> media_item_fixture(source_id: source.id, media_filepath: nil) end)
+
+      {:ok, _view, html} = live_isolated(conn, HistoryTableLive, session: create_session("pending"))
+
+      assert titles(html) == [third.title, second.title, first.title]
+    end
   end
 
   describe "job:state events" do
@@ -77,5 +95,12 @@ defmodule PinchflatWeb.Pages.HistoryTableLiveTest do
 
   defp reload_pending?(view) do
     :sys.get_state(view.pid).socket.assigns.reload_pending
+  end
+
+  defp titles(html) do
+    html
+    |> Floki.parse_fragment!()
+    |> Floki.find("tbody tr td:first-child a")
+    |> Enum.map(&String.trim(Floki.text(&1)))
   end
 end

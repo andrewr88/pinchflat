@@ -35,6 +35,13 @@ defmodule Pinchflat.Lifecycle.Notifications.CommandRunnerTest do
       assert String.contains?(output, "--dry-run")
     end
 
+    # Otherwise a server like `--config=<url>` would be taken as an apprise option
+    test "separates the servers from the options" do
+      assert {:ok, output} = Runner.run(["--config=https://example.com/apprise.yml", "server_2"], title: "A title")
+
+      assert output == "--verbose --title A title -- --config=https://example.com/apprise.yml server_2"
+    end
+
     test "returns the output when the command fails" do
       wrap_executable("/bin/false", fn ->
         assert {:error, ""} = Runner.run("server_1", [])

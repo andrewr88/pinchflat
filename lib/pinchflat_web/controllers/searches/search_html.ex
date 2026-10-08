@@ -4,12 +4,13 @@ defmodule PinchflatWeb.Searches.SearchHTML do
   embed_templates "search_html/*"
 
   @doc """
-  Highlight search terms in a string of text based on `[PF_HIGHLIGHT]` and `[/PF_HIGHLIGHT]` tags
+  Highlight search terms in a string of text. They're wrapped in the STX and ETX control
+  characters, as in the `matching_search_term` of `Pinchflat.Media.search/2`'s results
   """
   attr :text, :string, required: true
 
   def highlight_search_terms(assigns) do
-    split_string = String.split(assigns.text, ~r{\[PF_HIGHLIGHT\]|\[/PF_HIGHLIGHT\]}, include_captures: true)
+    split_string = String.split(assigns.text, ~r{[\x02\x03]}, include_captures: true)
     assigns = assign(assigns, split_string: split_string)
 
     ~H"""
@@ -19,7 +20,7 @@ defmodule PinchflatWeb.Searches.SearchHTML do
     """
   end
 
-  defp render_fragment("[PF_HIGHLIGHT]"), do: raw(~s(<span class="font-bold italic">))
-  defp render_fragment("[/PF_HIGHLIGHT]"), do: raw("</span>")
+  defp render_fragment("\x02"), do: raw(~s(<span class="font-bold italic">))
+  defp render_fragment("\x03"), do: raw("</span>")
   defp render_fragment(text), do: text
 end

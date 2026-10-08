@@ -112,7 +112,7 @@
       />
     </section>
 
-    <section x-data={"{ cutoffDate: '#{f[:download_cutoff_date].value}' }"}>
+    <section x-data={"{ cutoffDate: #{js_string(f[:download_cutoff_date].value)} }"}>
       <.input
         field={f[:download_cutoff_date]}
         type="text"
@@ -132,7 +132,7 @@
             options={cutoff_date_presets()}
             type="select"
             inputclass="w-30 lg:w-60 ml-2 md:ml-4"
-            x-on:change={"cutoffDate = $event.target.value || '#{f[:download_cutoff_date].value}'"}
+            x-on:change={"cutoffDate = $event.target.value || #{js_string(f[:download_cutoff_date].value)}"}
           />
         </:input_append>
       </.input>
@@ -168,7 +168,7 @@
         x-data={
           """
           { 
-            placeholders: JSON.parse('#{output_path_template_override_placeholders(@media_profiles)}'),
+            placeholders: #{output_path_template_override_placeholders(@media_profiles)},
             inputValue: null
           }
           """
