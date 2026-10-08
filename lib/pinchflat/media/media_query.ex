@@ -68,6 +68,12 @@ defmodule Pinchflat.Media.MediaQuery do
     )
   end
 
+  # The media a channel's tab lists (see `Pinchflat.Sources.indexing_urls/1`), told apart by the same flags
+  # as in `format_matching_profile_preference/0`
+  def in_channel_tab(:videos), do: dynamic([mi], mi.short_form_content == false and mi.livestream == false)
+  def in_channel_tab(:shorts), do: dynamic([mi], mi.short_form_content == true)
+  def in_channel_tab(:streams), do: dynamic([mi], mi.livestream == true)
+
   def matches_source_title_regex do
     dynamic(
       [mi, source],

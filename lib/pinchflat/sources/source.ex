@@ -28,6 +28,9 @@ defmodule Pinchflat.Sources.Source do
     series_directory
     index_frequency_minutes
     fast_index
+    index_videos
+    index_shorts
+    index_livestreams
     cookie_behaviour
     download_media
     last_indexed_at
@@ -51,6 +54,9 @@ defmodule Pinchflat.Sources.Source do
   @initially_required_fields ~w(
     index_frequency_minutes
     fast_index
+    index_videos
+    index_shorts
+    index_livestreams
     download_media
     original_url
     media_profile_id
@@ -79,6 +85,11 @@ defmodule Pinchflat.Sources.Source do
     field :collection_type, Ecto.Enum, values: [:channel, :playlist]
     field :index_frequency_minutes, :integer, default: 60 * 24
     field :fast_index, :boolean, default: false
+    # Which of a channel's tabs to look for media in. Only used for a channel's own URL, not for one of its
+    # tabs or a playlist. See `Pinchflat.Sources.indexing_urls/1`
+    field :index_videos, :boolean, default: true
+    field :index_shorts, :boolean, default: true
+    field :index_livestreams, :boolean, default: true
     field :cookie_behaviour, Ecto.Enum, values: [:disabled, :when_needed, :all_operations], default: :disabled
     field :download_media, :boolean, default: true
     field :last_indexed_at, :utc_datetime
@@ -131,6 +142,7 @@ defmodule Pinchflat.Sources.Source do
     |> validate_media_profile_not_being_deleted()
     |> validate_title_regex()
     |> validate_min_and_max_durations()
+    |> validate_channel_tabs()
     |> validate_number(:retention_period_days, greater_than_or_equal_to: 0)
     # Ensures it ends with `.{{ ext }}` or `.%(ext)s` or similar (with a little wiggle room)
     |> validate_format(:output_path_template_override, MediaProfile.ext_regex(), message: "must end with .{{ ext }}")
@@ -213,6 +225,22 @@ defmodule Pinchflat.Sources.Source do
   end
 
   defp validate_min_and_max_durations(changeset), do: changeset
+
+  # A channel that scans none of its tabs would never find any media. The error goes on the last tab's field so the
+  # form shows it below all of them. Like the durations, this only runs when a tab or the collection type changes
+  defp validate_channel_tabs(%{changes: changes} = changeset)
+       when is_map_key(changes, :index_videos) or is_map_key(changes, :index_shorts) or
+              is_map_key(changes, :index_livestreams) or is_map_key(changes, :collection_type) do
+    scans_a_tab = Enum.any?([:index_videos, :index_shorts, :index_livestreams], &get_field(changeset, &1))
+
+    if get_field(changeset, :collection_type) == :channel and not scans_a_tab do
+      add_error(changeset, :index_livestreams, "at least one tab must be scanned for a channel")
+    else
+      changeset
+    end
+  end
+
+  defp validate_channel_tabs(changeset), do: changeset
 
   defimpl Jason.Encoder, for: Source do
     def encode(value, opts) do

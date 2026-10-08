@@ -22,6 +22,10 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpers do
 
   alias Pinchflat.YtDlp.Media, as: YtDlpMedia
 
+  # %{source UUID => %{media ID => %{short_form_content: boolean(), livestream: boolean()}}} for media that was
+  # skipped since its source doesn't index its type. See `index_and_kickoff_downloads/1`
+  @skipped_media_agent {:global, __MODULE__.SkippedMedia}
+
   @doc """
   Kicks off a new fast indexing task for a source. This will delete any existing fast indexing
   tasks for the source before starting a new one.
@@ -41,6 +45,13 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpers do
   Returns [%MediaItem{}] where each item is a new media item that was created _but not necessarily
   downloaded_. If the media IDs can't be fetched, the error is logged and treated as if no new media
   was found (ie: returns [] but still kicks off downloads for pending media items).
+
+  Media whose type the source doesn't index (see `Sources.indexes_media_type?/2`, eg: a short when the
+  source doesn't scan its channel's Shorts tab) isn't created. Since it'd otherwise be fetched again by
+  every fast index while it's among the source's recent media (eg: a channel's feed can be mostly shorts),
+  it's remembered (in memory) and only fetched again if the source indexes its type by then. A livestream
+  without a duration (ie: it hasn't happened yet or is still live) isn't remembered as it can turn out to
+  be a regular video (eg: a premiere).
   """
   def index_and_kickoff_downloads(%Source{} = source) do
     # The media_profile is needed to determine the quality options to _then_ determine a more
@@ -62,18 +73,23 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpers do
     existing_media_items = list_media_items_by_media_id_for(source, media_ids)
     new_media_ids = media_ids -- Enum.map(existing_media_items, & &1.media_id)
 
-    maybe_new_media_items =
-      Enum.map(new_media_ids, fn media_id ->
-        case create_media_item_from_media_id(source, media_id) do
+    {maybe_new_media_items, skipped_media} =
+      Enum.map_reduce(new_media_ids, get_skipped_media(source), fn media_id, skipped_media ->
+        case create_media_item_from_media_id(source, media_id, skipped_media) do
           {:ok, media_item} ->
             DownloadingHelpers.kickoff_download_if_pending(media_item, priority: 0)
-            media_item
+            {media_item, Map.delete(skipped_media, media_id)}
+
+          {:skipped, media} ->
+            {nil, put_skipped_media(skipped_media, media_id, media)}
 
           err ->
             Logger.error("Error creating media item '#{media_id}' from URL: #{inspect(err)}")
-            nil
+            {nil, skipped_media}
         end
       end)
+
+    save_skipped_media(source, media_ids, skipped_media)
 
     # Pick up any stragglers. Intentionally has a lower priority than the per-media item
     # kickoff above
@@ -99,7 +115,22 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpers do
     |> Repo.all()
   end
 
-  defp create_media_item_from_media_id(source, media_id) do
+  # Media that was skipped before isn't fetched again unless the source indexes its type now
+  defp create_media_item_from_media_id(source, media_id, skipped_media) do
+    case Map.fetch(skipped_media, media_id) do
+      {:ok, media} ->
+        if Sources.indexes_media_type?(source, media) do
+          fetch_and_create_media_item(source, media_id)
+        else
+          {:skipped, media}
+        end
+
+      :error ->
+        fetch_and_create_media_item(source, media_id)
+    end
+  end
+
+  defp fetch_and_create_media_item(source, media_id) do
     url = "https://www.youtube.com/watch?v=#{media_id}"
     # This is set to :metadata instead of :indexing since this happens _after_ the
     # actual indexing process. In reality, slow indexing is the only thing that
@@ -112,10 +143,44 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpers do
 
     case YtDlpMedia.get_media_attributes(url, command_opts, use_cookies: should_use_cookies) do
       {:ok, media_attrs} ->
-        Media.create_media_item_from_backend_attrs(source, media_attrs)
+        if Sources.indexes_media_type?(source, media_attrs) do
+          Media.create_media_item_from_backend_attrs(source, media_attrs)
+        else
+          {:skipped, media_attrs}
+        end
 
       err ->
         err
+    end
+  end
+
+  defp put_skipped_media(skipped_media, _media_id, %{livestream: true, duration_seconds: nil}), do: skipped_media
+
+  defp put_skipped_media(skipped_media, media_id, media) do
+    Map.put(skipped_media, media_id, Map.take(media, [:short_form_content, :livestream]))
+  end
+
+  defp get_skipped_media(source) do
+    Agent.get(skipped_media_agent(), &Map.get(&1, source.uuid, %{}))
+  end
+
+  # Only media that's still among the source's recent media is kept. Nothing changes if they couldn't be fetched
+  defp save_skipped_media(_source, [] = _media_ids, _skipped_media), do: :ok
+
+  defp save_skipped_media(source, media_ids, skipped_media) do
+    kept = Map.take(skipped_media, media_ids)
+
+    Agent.update(skipped_media_agent(), fn all_skipped_media ->
+      if map_size(kept) == 0,
+        do: Map.delete(all_skipped_media, source.uuid),
+        else: Map.put(all_skipped_media, source.uuid, kept)
+    end)
+  end
+
+  defp skipped_media_agent do
+    case Agent.start(fn -> %{} end, name: @skipped_media_agent) do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
     end
   end
 end

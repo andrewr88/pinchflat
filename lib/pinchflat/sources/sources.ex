@@ -25,6 +25,12 @@ defmodule Pinchflat.Sources do
   alias Pinchflat.Metadata.MetadataFileHelpers
   alias Pinchflat.YtDlp.Media, as: YtDlpMedia
 
+  # The channel tabs a source can scan, by their URL path, with the source field that turns each on
+  @channel_tabs [videos: :index_videos, shorts: :index_shorts, streams: :index_livestreams]
+  # The path of a channel's own URL (eg: /@handle, /channel/UC..., /c/name or /user/name) rather than one of its tabs
+  @channel_path_regex ~r{\A/(?:@[^/]+|(?:channel|c|user)/[^/]+)/?\z}
+  @youtube_hosts ["youtube.com", "www.youtube.com", "m.youtube.com"]
+
   @doc """
   Returns the relevant output path template for a source.
   Pulls from the source's override if present, otherwise uses the media profile's.
@@ -49,6 +55,65 @@ defmodule Pinchflat.Sources do
       :all_operations -> true
       :when_needed -> operation in [:indexing, :error_recovery]
     end
+  end
+
+  @doc """
+  Returns whether a source scans its channel's Videos, Shorts and Live tabs separately, ie: whether its
+  `index_videos`, `index_shorts` and `index_livestreams` settings are used. That's the case for a YouTube
+  channel whose URL is the channel's own (eg: https://www.youtube.com/@handle, /channel/UC..., /c/name or
+  /user/name). A source for one of a channel's tabs (eg: https://www.youtube.com/@handle/videos), a playlist,
+  or a source from another site is indexed by its own URL.
+
+  Returns boolean()
+  """
+  def scans_channel_tabs?(%Source{collection_type: :channel, original_url: url}) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host, path: path} when scheme in ["http", "https"] and is_binary(host) ->
+        String.downcase(host) in @youtube_hosts and is_binary(path) and path =~ @channel_path_regex
+
+      _ ->
+        false
+    end
+  end
+
+  def scans_channel_tabs?(_source), do: false
+
+  @doc """
+  Returns the URLs to index a source with, each with the channel tab it's for (nil if it isn't for one).
+  A source that scans its channel's tabs (see `scans_channel_tabs?/1`) is indexed by the URL of each tab
+  it scans: its own URL with /videos, /shorts or /streams (the Live tab) added. That way, each tab stops
+  at media that's been indexed before on its own, rather than the first tab stopping all of them as when
+  yt-dlp goes through a channel's tabs in one run. Any other source is indexed by its own URL.
+
+  Returns [{:videos | :shorts | :streams | nil, binary()}]
+  """
+  def indexing_urls(%Source{} = source) do
+    if scans_channel_tabs?(source) do
+      uri = URI.parse(source.original_url)
+
+      for {tab, field} <- @channel_tabs, Map.fetch!(source, field) do
+        {tab, URI.to_string(%URI{uri | path: String.trim_trailing(uri.path, "/") <> "/#{tab}"})}
+      end
+    else
+      [{nil, source.original_url}]
+    end
+  end
+
+  @doc """
+  Returns whether a source indexes media of the given type, going by the media's `short_form_content` and
+  `livestream` flags like the media profile's shorts and livestream behaviours do. Only a source that scans
+  its channel's tabs (see `scans_channel_tabs?/1`) leaves media out: shorts if it doesn't scan the Shorts
+  tab, livestreams if it doesn't scan the Live tab, and media that's neither if it doesn't scan the Videos tab.
+
+  Returns boolean()
+  """
+  def indexes_media_type?(%Source{} = source, media) do
+    short = media.short_form_content == true
+    livestream = media.livestream == true
+
+    not scans_channel_tabs?(source) or
+      ((source.index_shorts or not short) and (source.index_livestreams or not livestream) and
+         (source.index_videos or short or livestream))
   end
 
   @doc """

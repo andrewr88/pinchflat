@@ -22,6 +22,9 @@ defmodule PinchflatWeb.Sources.SourceController do
     media_profile_id
     index_frequency_minutes
     fast_index
+    index_videos
+    index_shorts
+    index_livestreams
     download_media
     cookie_behaviour
     min_duration_seconds

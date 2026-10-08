@@ -26,7 +26,9 @@ defmodule Pinchflat.SourcesFixtures do
             collection_type: "channel",
             custom_name: "Cool and good internal name!",
             description: "This is a description",
-            original_url: "https://www.youtube.com/@#{Faker.String.base64(12)}",
+            # One of a channel's tabs, so it's indexed with its own URL in one yt-dlp run. A channel's
+            # own URL is indexed tab by tab (see `Pinchflat.Sources.indexing_urls/1`)
+            original_url: "https://www.youtube.com/@#{Faker.String.base64(12)}/videos",
             media_profile_id: ProfilesFixtures.media_profile_fixture().id,
             index_frequency_minutes: 60
           }

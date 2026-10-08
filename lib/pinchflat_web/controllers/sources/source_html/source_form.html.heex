@@ -75,6 +75,20 @@
       </div>
     </section>
 
+    <section>
+      <.label>Channel Tabs to Scan</.label>
+      <div class="flex flex-col gap-2 ml-1">
+        <.input field={f[:index_videos]} type="checkbox" label="Scan Videos" inputclass="h-5 w-5" />
+        <.input field={f[:index_shorts]} type="checkbox" label="Scan Shorts" inputclass="h-5 w-5" />
+        <.input field={f[:index_livestreams]} type="checkbox" label="Scan Live" inputclass="h-5 w-5" />
+      </div>
+      <.help>
+        Which tabs of the channel to look for new media in. To control what gets downloaded, use the media profile's
+        'Include Shorts' and 'Include Livestreams' settings. Only used for channel addresses (eg: https://www.youtube.com/@name),
+        not for one of a channel's tabs or a playlist
+      </.help>
+    </section>
+
     <h3 class="mt-8 text-2xl text-black dark:text-white">
       Downloading Options
     </h3>

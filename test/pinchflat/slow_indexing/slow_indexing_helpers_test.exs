@@ -8,6 +8,7 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpersTest do
   import Pinchflat.ProfilesFixtures
 
   alias Pinchflat.Tasks
+  alias Pinchflat.Sources
   alias Pinchflat.Tasks.Task
   alias Pinchflat.Media.MediaItem
   alias Pinchflat.FastIndexing.FastIndexingWorker
@@ -931,6 +932,228 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpersTest do
 
       SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
     end
+  end
+
+  describe "index_and_enqueue_download_for_media_items/2 for a channel that scans its tabs" do
+    setup do
+      {:ok, source: source_fixture(collection_type: :channel, original_url: "https://www.youtube.com/@tabbed")}
+    end
+
+    test "runs yt-dlp once for each tab the channel scans", %{source: source} do
+      stub_tabs(%{})
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert receive_indexed_urls() == [
+               "https://www.youtube.com/@tabbed/videos",
+               "https://www.youtube.com/@tabbed/shorts",
+               "https://www.youtube.com/@tabbed/streams"
+             ]
+
+      source = source |> Sources.change_source(%{index_videos: false, index_livestreams: false}) |> Repo.update!()
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert receive_indexed_urls() == ["https://www.youtube.com/@tabbed/shorts"]
+    end
+
+    test "runs yt-dlp once with the source's URL for one of a channel's tabs or a playlist" do
+      stub_tabs(%{})
+
+      sources = [
+        source_fixture(collection_type: :channel, original_url: "https://www.youtube.com/@tabbed/featured"),
+        source_fixture(collection_type: :playlist, original_url: "https://www.youtube.com/playlist?list=PL123")
+      ]
+
+      for source <- sources do
+        source = source |> Sources.change_source(%{index_videos: false, index_shorts: false}) |> Repo.update!()
+
+        SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+        assert receive_indexed_urls() == [source.original_url]
+      end
+    end
+
+    test "creates the media from all of the tabs as one index", %{source: source} do
+      stub_tabs(%{
+        "videos" => {:ok, tab_media_json(["video1", "video2"])},
+        "shorts" => {:ok, tab_media_json(["short1"])},
+        "streams" => {:ok, tab_media_json(["live1"])}
+      })
+
+      media_items = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert Enum.map(media_items, & &1.media_id) == ["video1", "video2", "short1", "live1"]
+      assert Repo.aggregate(where(MediaItem, source_id: ^source.id), :count) == 4
+      assert %{last_indexed_at: %DateTime{}, incomplete_first_index_count: 0} = Repo.reload!(source)
+    end
+
+    test "treats a tab the channel doesn't have as having no media", %{source: source} do
+      stub_tabs(%{
+        "videos" => {:ok, tab_media_json(["video1"])},
+        "shorts" => {:error, "ERROR: [youtube:tab] @tabbed: This channel does not have a shorts tab\n", 1},
+        "streams" => {:error, "ERROR: [youtube:tab] @tabbed: This channel does not have a streams tab\n", 1}
+      })
+
+      assert [%MediaItem{media_id: "video1"}] = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert %{last_indexed_at: %DateTime{}, incomplete_first_index_count: 0} = Repo.reload!(source)
+    end
+
+    test "doesn't mark a first index as indexed if yt-dlp didn't finish one of the tabs", %{source: source} do
+      stub_tabs(%{
+        "videos" => {:ok, tab_media_json(["video1"])},
+        "shorts" => {:partial, tab_media_json(["short1"])},
+        "streams" => {:ok, tab_media_json(["live1"])}
+      })
+
+      assert {:error, :indexing_incomplete} = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert %{last_indexed_at: nil, incomplete_first_index_count: 1} = source = Repo.reload!(source)
+      assert Repo.aggregate(where(MediaItem, source_id: ^source.id), :count) == 3
+
+      # So the next index of every tab is a full one again
+      receive_indexed_urls()
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert [_, _, _] = indexed = receive_indexed_urls_with_opts()
+
+      for {_url, opts} <- indexed do
+        refute :break_on_existing in opts
+        refute Keyword.has_key?(opts, :download_archive)
+      end
+    end
+
+    test "doesn't mark a first index as indexed if one of the tabs failed", %{source: source} do
+      stub_tabs(%{
+        "videos" => {:ok, tab_media_json(["video1"])},
+        "streams" => {:error, "Killed", 137}
+      })
+
+      assert {:error, :indexing_incomplete} = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert %{last_indexed_at: nil, incomplete_first_index_count: 1} = Repo.reload!(source)
+      assert [%MediaItem{media_id: "video1"}] = Repo.all(where(MediaItem, source_id: ^source.id))
+    end
+
+    test "marks a channel that's been indexed before as indexed even if one of the tabs failed" do
+      source =
+        source_fixture(
+          collection_type: :channel,
+          original_url: "https://www.youtube.com/@tabbed",
+          last_indexed_at: now_minus(1, :days)
+        )
+
+      stub_tabs(%{"videos" => {:ok, tab_media_json(["video1"])}, "streams" => {:error, "Killed", 137}})
+
+      assert [%MediaItem{media_id: "video1"}] = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert DateTime.diff(DateTime.utc_now(), Repo.reload!(source).last_indexed_at) < 2
+    end
+
+    test "fails without counting towards the incomplete first indexes if every tab fails", %{source: source} do
+      error = {:error, "ERROR: [youtube:tab] @tabbed: Unable to download API page: HTTP Error 503", 1}
+      stub_tabs(%{"videos" => error, "shorts" => error, "streams" => error})
+
+      assert {:error, :indexing_failed} = SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+      assert %{last_indexed_at: nil, incomplete_first_index_count: 0} = Repo.reload!(source)
+    end
+
+    test "reports the media items all of the tabs created once", %{source: source} do
+      stub_tabs(%{"videos" => {:ok, tab_media_json(["video1"])}, "shorts" => {:ok, tab_media_json(["short1"])}})
+      parent = self()
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source,
+        on_new_media_items: &send(parent, {:new_media_items, &1})
+      )
+
+      assert_received {:new_media_items, media_items}
+      assert ["short1", "video1"] == media_items |> Enum.map(& &1.media_id) |> Enum.sort()
+      refute_received {:new_media_items, _}
+    end
+
+    test "gives each tab a download archive of its own media" do
+      source =
+        source_fixture(
+          collection_type: :channel,
+          original_url: "https://www.youtube.com/@tabbed",
+          last_indexed_at: now()
+        )
+
+      # Each tab's archive starts at the 21st newest media of its type, which is the last one here. There
+      # are no livestreams
+      [video, short] =
+        for short_form_content <- [false, true] do
+          media_items =
+            for days_ago <- 1..21 do
+              media_item_fixture(
+                source_id: source.id,
+                short_form_content: short_form_content,
+                uploaded_at: now_minus(days_ago, :days)
+              )
+            end
+
+          List.last(media_items)
+        end
+
+      parent = self()
+
+      stub(YtDlpRunnerMock, :run, fn url, :get_media_attributes_for_collection, opts, _ot, _addl_opts ->
+        assert :break_on_existing in opts
+        send(parent, {:archive, Path.basename(url), opts |> Keyword.fetch!(:download_archive) |> File.read!()})
+
+        {:ok, ""}
+      end)
+
+      SlowIndexingHelpers.index_and_enqueue_download_for_media_items(source)
+
+      assert_received {:archive, "videos", archive}
+      assert archive == "youtube #{video.media_id}"
+      assert_received {:archive, "shorts", archive}
+      assert archive == "youtube #{short.media_id}"
+      # Nothing to stop at, so the tab is indexed all the way through (eg: the first time it's scanned)
+      assert_received {:archive, "streams", ""}
+    end
+  end
+
+  # Stubs yt-dlp with each of a channel's tabs' results, by the tab's URL path. {:partial, output} writes
+  # the output and exits with 1 like yt-dlp does when it fails part of the way through
+  defp stub_tabs(results_by_tab) do
+    parent = self()
+
+    stub(YtDlpRunnerMock, :run, fn url, :get_media_attributes_for_collection, opts, _ot, addl_opts ->
+      send(parent, {:indexed, url, opts})
+
+      case Map.get(results_by_tab, Path.basename(URI.parse(url).path), {:ok, ""}) do
+        {:partial, output} ->
+          File.write!(Keyword.fetch!(addl_opts, :output_filepath), output)
+          {:error, "ERROR: [youtube] x: Sign in to confirm you're not a bot", 1}
+
+        result ->
+          result
+      end
+    end)
+  end
+
+  defp receive_indexed_urls, do: Enum.map(receive_indexed_urls_with_opts(), fn {url, _opts} -> url end)
+
+  defp receive_indexed_urls_with_opts(indexed \\ []) do
+    receive do
+      {:indexed, url, opts} -> receive_indexed_urls_with_opts([{url, opts} | indexed])
+    after
+      0 -> Enum.reverse(indexed)
+    end
+  end
+
+  defp tab_media_json(media_ids) do
+    Enum.map_join(media_ids, "\n", fn media_id ->
+      Phoenix.json_library().encode!(%{
+        id: media_id,
+        title: "Media #{media_id}",
+        original_url: "https://www.youtube.com/watch?v=#{media_id}",
+        live_status: "not_live",
+        description: "desc",
+        aspect_ratio: 1.78,
+        duration: 600,
+        upload_date: "20210101"
+      })
+    end)
   end
 
   defp media_attributes_json(count) do

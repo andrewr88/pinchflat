@@ -362,6 +362,38 @@ defmodule Pinchflat.SlowIndexing.MediaCollectionIndexingWorkerTest do
       perform_job(MediaCollectionIndexingWorker, %{id: source.id})
     end
 
+    test "sends one notification for the new media from all of a channel's tabs" do
+      source = source_fixture(collection_type: :channel, original_url: "https://www.youtube.com/@tabbed")
+
+      short =
+        Phoenix.json_library().encode!(%{
+          id: "short1",
+          title: "Short 1",
+          original_url: "https://www.youtube.com/shorts/short1",
+          live_status: "not_live",
+          description: "desc",
+          aspect_ratio: 0.56,
+          duration: 30,
+          upload_date: "20210101"
+        })
+
+      stub(YtDlpRunnerMock, :run, fn url, :get_media_attributes_for_collection, _opts, _ot, _addl_opts ->
+        case Path.basename(url) do
+          "videos" -> {:ok, source_attributes_return_fixture()}
+          "shorts" -> {:ok, short}
+          "streams" -> {:error, "ERROR: [youtube:tab] @tabbed: This channel does not have a streams tab", 1}
+        end
+      end)
+
+      expect(AppriseRunnerMock, :run, fn _servers, opts ->
+        assert Keyword.get(opts, :body) =~ "Found 4 new media items for"
+
+        {:ok, ""}
+      end)
+
+      perform_job(MediaCollectionIndexingWorker, %{id: source.id})
+    end
+
     test "doesn't send a notification if indexing fails without finding new media" do
       source = source_fixture()
 

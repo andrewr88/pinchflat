@@ -90,6 +90,143 @@ defmodule Pinchflat.SourcesTest do
     end
   end
 
+  describe "scans_channel_tabs?/1" do
+    test "is true for a channel whose URL is the channel's own" do
+      urls = [
+        "https://www.youtube.com/@youtubecreators",
+        "https://www.youtube.com/@youtubecreators/",
+        "https://www.youtube.com/channel/UCkRfArvrzheW2E7b6SVT7vQ",
+        "https://www.youtube.com/c/YouTubeCreators",
+        "https://www.youtube.com/user/YouTubeCreators",
+        "http://youtube.com/@youtubecreators",
+        "https://m.youtube.com/@youtubecreators",
+        "https://WWW.YOUTUBE.COM/@youtubecreators?si=abc123"
+      ]
+
+      for url <- urls do
+        assert Sources.scans_channel_tabs?(%Source{collection_type: :channel, original_url: url}), url
+      end
+    end
+
+    test "is false for one of a channel's tabs, a playlist, or another site" do
+      urls = [
+        "https://www.youtube.com/@youtubecreators/videos",
+        "https://www.youtube.com/@youtubecreators/shorts",
+        "https://www.youtube.com/@youtubecreators/streams",
+        "https://www.youtube.com/@youtubecreators/featured",
+        "https://www.youtube.com/@youtubecreators/playlists",
+        "https://www.youtube.com/channel/UCkRfArvrzheW2E7b6SVT7vQ/videos",
+        "https://www.youtube.com/c/YouTubeCreators/streams",
+        "https://www.youtube.com/user/YouTubeCreators/shorts",
+        "https://www.youtube.com/playlist?list=UUkRfArvrzheW2E7b6SVT7vQ",
+        "https://music.youtube.com/channel/UCkRfArvrzheW2E7b6SVT7vQ",
+        "https://www.example.com/@youtubecreators",
+        "www.youtube.com/@youtubecreators"
+      ]
+
+      for url <- urls do
+        refute Sources.scans_channel_tabs?(%Source{collection_type: :channel, original_url: url}), url
+      end
+    end
+
+    test "is false for a playlist" do
+      source = %Source{
+        collection_type: :playlist,
+        original_url: "https://www.youtube.com/channel/UCkRfArvrzheW2E7b6SVT7vQ"
+      }
+
+      refute Sources.scans_channel_tabs?(source)
+    end
+  end
+
+  describe "indexing_urls/1" do
+    test "returns the URL of each tab a channel scans" do
+      source = %Source{collection_type: :channel, original_url: "https://www.youtube.com/@youtubecreators"}
+
+      assert Sources.indexing_urls(source) == [
+               {:videos, "https://www.youtube.com/@youtubecreators/videos"},
+               {:shorts, "https://www.youtube.com/@youtubecreators/shorts"},
+               {:streams, "https://www.youtube.com/@youtubecreators/streams"}
+             ]
+
+      assert Sources.indexing_urls(%Source{source | index_videos: false, index_livestreams: false}) ==
+               [{:shorts, "https://www.youtube.com/@youtubecreators/shorts"}]
+    end
+
+    test "adds the tab to the URL's path" do
+      source = %Source{
+        collection_type: :channel,
+        original_url: "https://www.youtube.com/channel/UCkRfArvrzheW2E7b6SVT7vQ/?si=abc123",
+        index_shorts: false,
+        index_livestreams: false
+      }
+
+      assert Sources.indexing_urls(source) ==
+               [{:videos, "https://www.youtube.com/channel/UCkRfArvrzheW2E7b6SVT7vQ/videos?si=abc123"}]
+    end
+
+    test "returns the source's own URL for anything else, whatever tabs it scans" do
+      sources = [
+        %Source{collection_type: :channel, original_url: "https://www.youtube.com/@youtubecreators/featured"},
+        %Source{collection_type: :playlist, original_url: "https://www.youtube.com/playlist?list=PLpjK416fmKwRt"},
+        %Source{collection_type: :channel, original_url: "https://www.example.com/@youtubecreators"}
+      ]
+
+      for source <- sources do
+        source = %Source{source | index_videos: false, index_shorts: false}
+
+        assert Sources.indexing_urls(source) == [{nil, source.original_url}]
+      end
+    end
+  end
+
+  describe "indexes_media_type?/2" do
+    setup do
+      {
+        :ok,
+        source: %Source{collection_type: :channel, original_url: "https://www.youtube.com/@youtubecreators"},
+        video: %{short_form_content: false, livestream: false},
+        short: %{short_form_content: true, livestream: false},
+        livestream: %{short_form_content: false, livestream: true}
+      }
+    end
+
+    test "leaves out the media whose tab a channel doesn't scan", %{source: source} = context do
+      media = Map.take(context, [:video, :short, :livestream])
+
+      assert Enum.all?(Map.values(media), &Sources.indexes_media_type?(source, &1))
+
+      for {field, left_out} <- [index_videos: :video, index_shorts: :short, index_livestreams: :livestream] do
+        source = Map.put(source, field, false)
+
+        refute Sources.indexes_media_type?(source, media[left_out])
+        assert Enum.all?(Map.values(Map.delete(media, left_out)), &Sources.indexes_media_type?(source, &1))
+      end
+    end
+
+    # Like the media profile's shorts and livestream behaviours: excluding either excludes it
+    test "leaves out a short livestream if a channel doesn't scan either of their tabs", %{source: source} do
+      short_livestream = %{short_form_content: true, livestream: true}
+
+      assert Sources.indexes_media_type?(%Source{source | index_videos: false}, short_livestream)
+      refute Sources.indexes_media_type?(%Source{source | index_shorts: false}, short_livestream)
+      refute Sources.indexes_media_type?(%Source{source | index_livestreams: false}, short_livestream)
+    end
+
+    test "leaves nothing out for one of a channel's tabs or a playlist", context do
+      sources = [
+        %Source{collection_type: :channel, original_url: "https://www.youtube.com/@youtubecreators/videos"},
+        %Source{collection_type: :playlist, original_url: "https://www.youtube.com/playlist?list=PLpjK416fmKwRt"}
+      ]
+
+      for source <- sources, media <- [context.video, context.short, context.livestream] do
+        source = %Source{source | index_videos: false, index_shorts: false, index_livestreams: false}
+
+        assert Sources.indexes_media_type?(source, media)
+      end
+    end
+  end
+
   describe "list_sources/0" do
     test "it returns all sources" do
       source = source_fixture()
@@ -1227,6 +1364,54 @@ defmodule Pinchflat.SourcesTest do
       changeset = Sources.change_source(source, %{title_filter_regex: "*FOO"})
 
       assert "is invalid" in errors_on(changeset).title_filter_regex
+    end
+  end
+
+  describe "change_source/3 when testing channel tab validations" do
+    test "a source scans all of its channel's tabs by default" do
+      assert %Source{index_videos: true, index_shorts: true, index_livestreams: true} = source_fixture()
+    end
+
+    test "fails if a channel scans none of its tabs" do
+      source = source_fixture(collection_type: :channel)
+
+      changeset = Sources.change_source(source, %{index_videos: false, index_shorts: false, index_livestreams: false})
+
+      assert "at least one tab must be scanned for a channel" in errors_on(changeset).index_livestreams
+    end
+
+    test "succeeds if a channel scans any one of its tabs" do
+      source = source_fixture(collection_type: :channel)
+
+      for field <- [:index_videos, :index_shorts, :index_livestreams] do
+        attrs = Map.put(%{index_videos: false, index_shorts: false, index_livestreams: false}, field, true)
+
+        assert %{errors: []} = Sources.change_source(source, attrs)
+      end
+    end
+
+    test "succeeds if a playlist scans none of its tabs since they aren't used" do
+      source = source_fixture(collection_type: :playlist)
+
+      assert %{errors: []} =
+               Sources.change_source(source, %{index_videos: false, index_shorts: false, index_livestreams: false})
+    end
+
+    test "fails if a source that scans none of its tabs becomes a channel" do
+      source = source_fixture(collection_type: :playlist, index_videos: false, index_shorts: false)
+      source = source |> Sources.change_source(%{index_livestreams: false}) |> Repo.update!()
+
+      changeset = Sources.change_source(source, %{collection_type: :channel})
+
+      assert "at least one tab must be scanned for a channel" in errors_on(changeset).index_livestreams
+    end
+
+    test "fails if a tab is nil" do
+      source = source_fixture()
+
+      changeset = Sources.change_source(source, %{index_shorts: nil}, :initial)
+
+      assert "can't be blank" in errors_on(changeset).index_shorts
     end
   end
 

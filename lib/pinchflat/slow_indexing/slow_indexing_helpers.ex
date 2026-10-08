@@ -84,6 +84,14 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
   We don't create a download archive for playlists (only channels), nor do we create one if
   the indexing was forced by the user.
 
+  A channel that scans its tabs separately (see `Sources.indexing_urls/1`) is indexed with one yt-dlp
+  run per tab it scans, each with its own file follower and download archive. A tab's archive only has
+  media from that tab (see `MediaQuery.in_channel_tab/1`) since the tab would never reach any other media,
+  so a tab whose media hasn't been indexed yet (eg: one that's just been turned on) is indexed all the way
+  through. A tab the channel doesn't have (eg: a Live tab if it's never streamed) just has nothing to index.
+  The runs make up one index: it's complete if every tab's run is, failed if every tab's run failed, and
+  partial (see below) otherwise, eg: if yt-dlp didn't get through one of the tabs.
+
   NOTE: downloads are only enqueued if the source is set to download media. Downloads are
   also enqueued for ALL pending media items, not just the ones that were indexed in this
   job run. This should ensure that any stragglers are caught if, for some reason, they
@@ -124,9 +132,9 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
     # The media_profile is needed to determine the quality options to _then_ determine a more
     # accurate predicted filepath
     source = Repo.preload(source, [:media_profile])
-    # See the method definition below for more info on how file watchers work
-    # (important reading if you're not familiar with it)
-    indexing_result = setup_file_watcher_and_kickoff_indexing(source, opts)
+    # See the method definitions below for more info on how a source's URLs are indexed and how
+    # file watchers work (important reading if you're not familiar with it)
+    indexing_result = index_source_urls(source, opts)
     # Reload because the source may have been updated during the (long-running) indexing process
     # and important settings like `download_media` may have changed.
     source = Repo.reload!(source)
@@ -192,6 +200,52 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
     Sources.update_source(source, %{last_indexed_at: DateTime.utc_now(), incomplete_first_index_count: 0})
   end
 
+  # Runs yt-dlp for each URL the source is indexed with (see `Sources.indexing_urls/1`), one after the other,
+  # and combines their results into one (see the docs above)
+  defp index_source_urls(source, opts) do
+    results =
+      for {tab, url} <- Sources.indexing_urls(source) do
+        source
+        |> setup_file_watcher_and_kickoff_indexing(tab, url, opts)
+        |> handle_tab_result(source, tab, url)
+      end
+
+    {indexed, failed} = Enum.split_with(results, &match?({status, _} when status in [:ok, :partial], &1))
+    media_attributes = Enum.flat_map(indexed, fn {_status, media_attributes} -> media_attributes end)
+
+    cond do
+      indexed == [] and failed != [] -> hd(failed)
+      failed == [] and Enum.all?(indexed, &match?({:ok, _}, &1)) -> {:ok, media_attributes}
+      true -> {:partial, media_attributes}
+    end
+  end
+
+  # A source's own URL is handled as it always is. yt-dlp fails without writing anything for a tab the
+  # channel doesn't have (eg: "ERROR: [youtube:tab] @handle: This channel does not have a streams tab"
+  # if it's never streamed), which just means there's nothing to index there
+  defp handle_tab_result(result, _source, nil = _tab, _url), do: result
+  defp handle_tab_result({status, _} = result, _source, _tab, _url) when status in [:ok, :partial], do: result
+
+  defp handle_tab_result(error, source, _tab, url) do
+    if missing_tab_error?(error) do
+      Logger.info("Nothing to index at #{url} for source #{source.id} since the channel doesn't have that tab")
+
+      {:ok, []}
+    else
+      Logger.warning(
+        "Failed to index #{url} for source #{source.id}: #{inspect(error, printable_limit: @logged_output_limit)}"
+      )
+
+      error
+    end
+  end
+
+  defp missing_tab_error?({:error, output, 1}) when is_binary(output) do
+    output =~ ~r/This channel does not have an? \S+ tab/
+  end
+
+  defp missing_tab_error?(_error), do: false
+
   # The file follower is a GenServer that watches a file for new lines and
   # processes them. This works well, but we have to be resilliant to partially-written
   # lines (ie: you should gracefully fail if you can't parse a line).
@@ -211,7 +265,7 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
   #
   # The temporary files (yt-dlp's output and the download archive) are deleted once indexing
   # is done, even if it raised. The file follower is stopped first so it's done with yt-dlp's output.
-  defp setup_file_watcher_and_kickoff_indexing(source, opts) do
+  defp setup_file_watcher_and_kickoff_indexing(source, tab, url, opts) do
     was_forced = Keyword.get(opts, :was_forced, false)
     should_use_cookies = Sources.use_cookies?(source, :indexing)
 
@@ -219,7 +273,7 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
       [output: DownloadOptionBuilder.build_output_path_for(source)] ++
         DownloadOptionBuilder.build_quality_options_for(source)
 
-    archive_options = build_download_archive_options(source, was_forced)
+    archive_options = build_download_archive_options(source, tab, was_forced)
     output_filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
     {:ok, pid} = FileFollowerServer.start_link()
     caller = self()
@@ -228,7 +282,7 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
     runner_opts = [output_filepath: output_filepath, file_listener_handler: handler, use_cookies: should_use_cookies]
 
     try do
-      source.original_url
+      url
       |> MediaCollection.get_media_attributes_for_collection(command_opts ++ archive_options, runner_opts)
       |> maybe_use_partial_output(output_filepath, source)
     after
@@ -386,12 +440,12 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
   #
   # From there, we format the media IDs in the way that yt-dlp expects (ie: "<extractor> <media_id>")
   # and return the filepath to the caller.
-  defp create_download_archive_file(source) do
+  defp create_download_archive_file(source, tab) do
     tmpfile = FilesystemUtils.generate_metadata_tmpfile(:txt)
 
     archive_contents =
       source
-      |> get_media_items_for_download_archive()
+      |> get_media_items_for_download_archive(tab)
       |> Enum.map_join("\n", fn media_item -> "youtube #{media_item.media_id}" end)
 
     case File.write(tmpfile, archive_contents) do
@@ -419,26 +473,34 @@ defmodule Pinchflat.SlowIndexing.SlowIndexingHelpers do
   #
   # The chosen limit and offset are arbitary, independent, and vibes-based. Feel free to
   # tweak as-needed
-  defp get_media_items_for_download_archive(source) do
+  #
+  # A channel's tab only stops at its own media since it never reaches any other. Otherwise, a tab
+  # with less recent media than the others would have nothing to stop at and be indexed all the way
+  # through every time
+  defp get_media_items_for_download_archive(source, tab) do
     MediaQuery.new()
     |> where(^MediaQuery.for_source(source))
+    |> maybe_in_channel_tab(tab)
     |> order_by(desc: :uploaded_at)
     |> limit(50)
     |> offset(20)
     |> Repo.all()
   end
 
+  defp maybe_in_channel_tab(query, nil), do: query
+  defp maybe_in_channel_tab(query, tab), do: where(query, ^MediaQuery.in_channel_tab(tab))
+
   # The download archive isn't useful for playlists (since those are ordered arbitrarily)
   # and we don't want to use it if the indexing was forced by the user. In other words,
   # only create an archive for channels that are being indexed as part of their regular
   # indexing schedule. The first indexing pass should also not create an archive.
-  defp build_download_archive_options(%Source{collection_type: :playlist}, _was_forced), do: []
-  defp build_download_archive_options(%Source{last_indexed_at: nil}, _was_forced), do: []
-  defp build_download_archive_options(_source, true), do: []
+  defp build_download_archive_options(%Source{collection_type: :playlist}, _tab, _was_forced), do: []
+  defp build_download_archive_options(%Source{last_indexed_at: nil}, _tab, _was_forced), do: []
+  defp build_download_archive_options(_source, _tab, true), do: []
 
   # Without an archive, yt-dlp indexes everything rather than stopping at media it's seen before
-  defp build_download_archive_options(source, _was_forced) do
-    case create_download_archive_file(source) do
+  defp build_download_archive_options(source, tab, _was_forced) do
+    case create_download_archive_file(source, tab) do
       {:ok, archive_file} -> [:break_on_existing, download_archive: archive_file]
       {:error, _reason} -> []
     end

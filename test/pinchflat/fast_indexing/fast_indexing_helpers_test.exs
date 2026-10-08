@@ -7,6 +7,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
   import Pinchflat.ProfilesFixtures
 
   alias Pinchflat.Tasks
+  alias Pinchflat.Sources
   alias Pinchflat.Settings
   alias Pinchflat.Media.MediaItem
   alias Pinchflat.FastIndexing.FastIndexingWorker
@@ -274,5 +275,100 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
 
       assert [%MediaItem{}] = FastIndexingHelpers.index_and_kickoff_downloads(source)
     end
+  end
+
+  describe "index_and_kickoff_downloads/1 for a channel that scans its tabs" do
+    setup do
+      stub(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>media_1</yt:videoId>"} end)
+
+      {:ok, source: source_fixture(collection_type: :channel, original_url: "https://www.youtube.com/@tabbed")}
+    end
+
+    test "only creates the media whose tab the channel scans", %{source: source} do
+      for {field, left_out_type} <- [index_videos: :video, index_shorts: :short, index_livestreams: :livestream],
+          media_type <- [:video, :short, :livestream] do
+        media_id = "#{field}_#{media_type}"
+        stub(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>#{media_id}</yt:videoId>"} end)
+
+        stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl ->
+          {:ok, typed_media_json(media_id, media_type)}
+        end)
+
+        source = Map.put(source, field, false)
+        expected_count = if media_type == left_out_type, do: 0, else: 1
+
+        assert length(FastIndexingHelpers.index_and_kickoff_downloads(source)) == expected_count, media_id
+        assert Repo.aggregate(where(MediaItem, media_id: ^media_id), :count) == expected_count, media_id
+      end
+    end
+
+    test "creates every type of media for one of a channel's tabs" do
+      source = source_fixture(collection_type: :channel, original_url: "https://www.youtube.com/@tabbed/videos")
+      source = source |> Sources.change_source(%{index_shorts: false, index_livestreams: false}) |> Repo.update!()
+
+      stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl ->
+        {:ok, typed_media_json("short_1", :short)}
+      end)
+
+      assert [%MediaItem{short_form_content: true}] = FastIndexingHelpers.index_and_kickoff_downloads(source)
+    end
+
+    test "doesn't fetch media it skipped again unless the channel scans its tab by then", %{source: source} do
+      source = source |> Sources.change_source(%{index_shorts: false}) |> Repo.update!()
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl -> {:ok, short_json()} end)
+
+      assert [] = FastIndexingHelpers.index_and_kickoff_downloads(source)
+
+      stub(YtDlpRunnerMock, :run, fn _url, _action, _opts, _ot, _addl -> flunk("Fetched skipped media again") end)
+
+      assert [] = FastIndexingHelpers.index_and_kickoff_downloads(source)
+
+      source = source |> Sources.change_source(%{index_shorts: true}) |> Repo.update!()
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl -> {:ok, short_json()} end)
+
+      assert [%MediaItem{short_form_content: true}] = FastIndexingHelpers.index_and_kickoff_downloads(source)
+    end
+
+    # It can turn out to be a regular video, eg: a premiere
+    test "fetches a livestream it skipped again if it hadn't happened yet", %{source: source} do
+      source = source |> Sources.change_source(%{index_livestreams: false}) |> Repo.update!()
+
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl ->
+        {:ok, typed_media_json("media_1", :upcoming)}
+      end)
+
+      assert [] = FastIndexingHelpers.index_and_kickoff_downloads(source)
+
+      expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl ->
+        {:ok, typed_media_json("media_1", :video)}
+      end)
+
+      assert [%MediaItem{livestream: false}] = FastIndexingHelpers.index_and_kickoff_downloads(source)
+    end
+  end
+
+  defp short_json, do: typed_media_json("media_1", :short)
+
+  # Like yt-dlp's output for each type of media. Fast indexing fetches media by its /watch URL so whether
+  # it's a short is only told by its length and aspect ratio
+  defp typed_media_json(media_id, type) do
+    {live_status, aspect_ratio, duration} =
+      case type do
+        :video -> {"not_live", 1.78, 600}
+        :short -> {"not_live", 0.56, 30}
+        :livestream -> {"was_live", 1.78, 3600}
+        :upcoming -> {"is_upcoming", 1.78, nil}
+      end
+
+    Phoenix.json_library().encode!(%{
+      id: media_id,
+      title: "Media #{media_id}",
+      original_url: "https://www.youtube.com/watch?v=#{media_id}",
+      live_status: live_status,
+      description: "desc",
+      aspect_ratio: aspect_ratio,
+      duration: duration,
+      upload_date: "20210101"
+    })
   end
 end

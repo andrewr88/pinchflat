@@ -69,6 +69,20 @@ defmodule PinchflatWeb.SourceControllerTest do
       refute html_response(conn, 200) =~ source.custom_name
     end
 
+    test "renders the channel tabs to scan, all ticked", %{conn: conn} do
+      document = conn |> get(~p"/sources/new") |> html_response(200) |> Floki.parse_document!()
+
+      for field <- ~w(index_videos index_shorts index_livestreams) do
+        # Unticked checkboxes aren't submitted, so a hidden input submits false
+        assert [_] = Floki.find(document, ~s(input[type="hidden"][name="source[#{field}]"][value="false"]))
+        assert [checkbox] = Floki.find(document, ~s(input[type="checkbox"][name="source[#{field}]"][value="true"]))
+        assert Floki.attribute(checkbox, "checked") != []
+      end
+
+      assert Floki.text(document) =~ "Channel Tabs to Scan"
+      assert Floki.text(document) =~ "Only used for channel addresses"
+    end
+
     test "omits media profiles that are marked for deletion", %{conn: conn} do
       media_profile_fixture(name: "Profile in use")
       media_profile_fixture(name: "Profile being deleted", marked_for_deletion_at: now())
@@ -139,6 +153,16 @@ defmodule PinchflatWeb.SourceControllerTest do
   end
 
   describe "show source" do
+    test "lists the channel tabs the source scans", %{conn: conn} do
+      source = source_fixture(index_shorts: false)
+
+      text = conn |> get(~p"/sources/#{source}") |> html_response(200) |> Floki.parse_document!() |> Floki.text()
+
+      assert text =~ ~r/index_videos:\s*true/
+      assert text =~ ~r/index_shorts:\s*false/
+      assert text =~ ~r/index_livestreams:\s*true/
+    end
+
     test "shows no directory update failure when the source has no directory updates", %{conn: conn} do
       source = source_fixture()
 
@@ -269,6 +293,9 @@ defmodule PinchflatWeb.SourceControllerTest do
         "media_profile_id" => to_string(media_profile_id),
         "index_frequency_minutes" => "120",
         "fast_index" => "false",
+        "index_videos" => "false",
+        "index_shorts" => "true",
+        "index_livestreams" => "false",
         "download_media" => "false",
         "cookie_behaviour" => "all_operations",
         "min_duration_seconds" => "10",
@@ -291,6 +318,9 @@ defmodule PinchflatWeb.SourceControllerTest do
                media_profile_id: ^media_profile_id,
                index_frequency_minutes: 120,
                fast_index: false,
+               index_videos: false,
+               index_shorts: true,
+               index_livestreams: false,
                download_media: false,
                cookie_behaviour: :all_operations,
                min_duration_seconds: 10,
@@ -300,6 +330,15 @@ defmodule PinchflatWeb.SourceControllerTest do
                title_filter_regex: "(?i)^How to Bike$",
                output_path_template_override: "/{{ title }}.{{ ext }}"
              } = Repo.reload!(source)
+    end
+
+    test "renders an error if a channel scans none of its tabs", %{conn: conn, source: source} do
+      params = %{"index_videos" => "false", "index_shorts" => "false", "index_livestreams" => "false"}
+
+      conn = put(conn, ~p"/sources/#{source}", source: params)
+
+      assert html_response(conn, 200) =~ "at least one tab must be scanned for a channel"
+      assert %{index_videos: true, index_shorts: true, index_livestreams: true} = Repo.reload!(source)
     end
 
     # An invalid date is shown again as it was entered, so it mustn't be able to break out of the form's JavaScript
