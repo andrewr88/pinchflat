@@ -38,13 +38,24 @@ defmodule Pinchflat.Pages.JobTableLive do
   end
 
   def mount(_params, _session, socket) do
-    PinchflatWeb.Endpoint.subscribe("job:state")
+    if connected?(socket), do: PinchflatWeb.Endpoint.subscribe("job:state")
 
-    {:ok, assign(socket, tasks: get_tasks())}
+    {:ok, assign(socket, tasks: get_tasks(), reload_pending: false)}
   end
 
+  def handle_info(%{topic: "job:state", event: "change"}, %{assigns: %{reload_pending: true}} = socket) do
+    {:noreply, socket}
+  end
+
+  # Jobs change state in bursts, so coalesce them into at most one reload per second
   def handle_info(%{topic: "job:state", event: "change"}, socket) do
-    {:noreply, assign(socket, tasks: get_tasks())}
+    Process.send_after(self(), :reload, 1_000)
+
+    {:noreply, assign(socket, reload_pending: true)}
+  end
+
+  def handle_info(:reload, socket) do
+    {:noreply, assign(socket, tasks: get_tasks(), reload_pending: false)}
   end
 
   defp get_tasks do

@@ -70,14 +70,23 @@ defmodule PinchflatWeb.Pages.JobTableLiveTest do
 
       assert html =~ ~p"/sources/#{source.id}"
     end
+  end
 
-    test "listens for job:state change events", %{conn: conn} do
-      {_source, _media_item, _task, _job} = create_media_item_job()
-      {:ok, _view, _html} = live_isolated(conn, JobTableLive, session: %{})
+  describe "job:state events" do
+    test "reloads the tasks on the scheduled reload", %{conn: conn} do
+      {:ok, view, html} = live_isolated(conn, JobTableLive, session: %{})
+      assert html =~ "Nothing Here!"
 
-      PinchflatWeb.Endpoint.broadcast("job:state", "change", nil)
+      {_source, media_item, _task, _job} = create_media_item_job()
+      for _ <- 1..3, do: PinchflatWeb.Endpoint.broadcast("job:state", "change", nil)
 
-      assert_receive %Phoenix.Socket.Broadcast{topic: "job:state", event: "change", payload: nil}
+      assert reload_pending?(view)
+      refute render(view) =~ media_item.title
+
+      send(view.pid, :reload)
+
+      refute reload_pending?(view)
+      assert render(view) =~ media_item.title
     end
   end
 
@@ -106,5 +115,9 @@ defmodule PinchflatWeb.Pages.JobTableLiveTest do
     job = Repo.get!(Oban.Job, task.job_id)
 
     {source, task, job}
+  end
+
+  defp reload_pending?(view) do
+    :sys.get_state(view.pid).socket.assigns.reload_pending
   end
 end
