@@ -5,6 +5,7 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorkerTest do
   import Pinchflat.ProfilesFixtures
 
   alias Pinchflat.Sources
+  alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Metadata.MetadataFileHelpers
   alias Pinchflat.Metadata.SourceMetadataStorageWorker
 
@@ -433,5 +434,140 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorkerTest do
 
       refute source.nfo_filepath
     end
+  end
+
+  describe "perform/1 when the source's stored files are replaced" do
+    setup do
+      media_directory = Application.get_env(:pinchflat, :media_directory)
+      suffix = :rand.uniform(1_000_000)
+
+      %{
+        series_directory: Path.join(media_directory, "show #{suffix}"),
+        new_series_directory: Path.join(media_directory, "new show #{suffix}")
+      }
+    end
+
+    test "deletes the stored NFO once the profile stops downloading NFOs", %{series_directory: series_directory} do
+      stub_source_lookups(series_directory, "{}")
+      nfo_filepath = Path.join(series_directory, "tvshow.nfo")
+      FilesystemUtils.write_p!(nfo_filepath, "old NFO")
+
+      profile = media_profile_fixture(%{download_nfo: false})
+
+      source =
+        source_fixture(%{media_profile_id: profile.id, series_directory: series_directory, nfo_filepath: nfo_filepath})
+
+      perform_job(SourceMetadataStorageWorker, %{id: source.id})
+
+      refute Repo.reload(source).nfo_filepath
+      refute File.exists?(nfo_filepath)
+    end
+
+    test "deletes the old series directory's NFO and images when the series directory changes", context do
+      stub_source_lookups(context.new_series_directory, render_metadata(:channel_source_metadata))
+
+      old_filepaths = %{
+        nfo_filepath: Path.join(context.series_directory, "tvshow.nfo"),
+        poster_filepath: Path.join(context.series_directory, "poster.jpg"),
+        fanart_filepath: Path.join(context.series_directory, "fanart.jpg"),
+        banner_filepath: Path.join(context.series_directory, "banner.jpg")
+      }
+
+      Enum.each(old_filepaths, fn {_field, filepath} -> FilesystemUtils.write_p!(filepath, "old file") end)
+
+      profile = media_profile_fixture(%{download_nfo: true, download_source_images: true})
+      source_attrs = %{media_profile_id: profile.id, series_directory: context.series_directory}
+      source = source_fixture(Map.merge(source_attrs, old_filepaths))
+      perform_job(SourceMetadataStorageWorker, %{id: source.id})
+      source = Repo.preload(Repo.reload(source), :metadata)
+
+      assert source.series_directory == context.new_series_directory
+
+      for {field, old_filepath} <- old_filepaths do
+        new_filepath = Map.fetch!(source, field)
+
+        assert Path.dirname(new_filepath) == context.new_series_directory
+        assert File.exists?(new_filepath)
+        refute File.exists?(old_filepath)
+      end
+
+      # The source's images in the internal metadata directory are left alone
+      assert File.exists?(source.metadata.poster_filepath)
+      assert File.exists?(source.metadata.fanart_filepath)
+      assert File.exists?(source.metadata.banner_filepath)
+
+      Sources.delete_source(source, delete_files: true)
+    end
+
+    test "keeps the stored NFO when its path doesn't change", %{series_directory: series_directory} do
+      stub_source_lookups(series_directory, "{}")
+      nfo_filepath = Path.join(series_directory, "tvshow.nfo")
+      FilesystemUtils.write_p!(nfo_filepath, "old NFO")
+
+      profile = media_profile_fixture(%{download_nfo: true})
+
+      source =
+        source_fixture(%{media_profile_id: profile.id, series_directory: series_directory, nfo_filepath: nfo_filepath})
+
+      perform_job(SourceMetadataStorageWorker, %{id: source.id})
+
+      assert Repo.reload(source).nfo_filepath == nfo_filepath
+      assert File.exists?(nfo_filepath)
+
+      File.rm!(nfo_filepath)
+    end
+
+    test "doesn't delete a stored NFO that's outside the media directory", %{series_directory: series_directory} do
+      stub_source_lookups(series_directory, "{}")
+      outside_nfo_filepath = FilesystemUtils.generate_metadata_tmpfile(:nfo)
+
+      profile = media_profile_fixture(%{download_nfo: false})
+
+      source =
+        source_fixture(%{
+          media_profile_id: profile.id,
+          series_directory: series_directory,
+          nfo_filepath: outside_nfo_filepath
+        })
+
+      perform_job(SourceMetadataStorageWorker, %{id: source.id})
+
+      refute Repo.reload(source).nfo_filepath
+      assert File.exists?(outside_nfo_filepath)
+
+      File.rm!(outside_nfo_filepath)
+    end
+
+    # Sources for the same channel (e.g. with different title filters) can share a series directory
+    test "doesn't delete a stored NFO that another source still uses", %{series_directory: series_directory} do
+      stub_source_lookups(series_directory, "{}")
+      nfo_filepath = Path.join(series_directory, "tvshow.nfo")
+      FilesystemUtils.write_p!(nfo_filepath, "shared NFO")
+
+      _other_source = source_fixture(%{series_directory: series_directory, nfo_filepath: nfo_filepath})
+      profile = media_profile_fixture(%{download_nfo: false})
+
+      source =
+        source_fixture(%{media_profile_id: profile.id, series_directory: series_directory, nfo_filepath: nfo_filepath})
+
+      perform_job(SourceMetadataStorageWorker, %{id: source.id})
+
+      refute Repo.reload(source).nfo_filepath
+      assert File.exists?(nfo_filepath)
+
+      File.rm!(nfo_filepath)
+    end
+  end
+
+  defp stub_source_lookups(series_directory, source_metadata) do
+    stub(YtDlpRunnerMock, :run, fn
+      _url, :get_source_details, _opts, _ot, _addl ->
+        filename = Path.join([series_directory, "Season 1", "bar.mp4"])
+
+        {:ok, source_details_return_fixture(%{filename: filename})}
+
+      _url, :get_source_metadata, _opts, _ot, _addl ->
+        {:ok, source_metadata}
+    end)
   end
 end

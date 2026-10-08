@@ -3,6 +3,7 @@ defmodule Pinchflat.Media.FileSyncingTest do
 
   import Pinchflat.MediaFixtures
 
+  alias Pinchflat.Media
   alias Pinchflat.Media.FileSyncing
   alias Pinchflat.Utils.FilesystemUtils
 
@@ -126,6 +127,34 @@ defmodule Pinchflat.Media.FileSyncingTest do
       assert get_subtitle_filepath(media_item, "en")
       assert [updated_media_item] = FileSyncing.sync_file_presence_on_disk([media_item])
       assert get_subtitle_filepath(updated_media_item, "en")
+    end
+
+    # Subtitles are stored sorted by language (see MetadataParser)
+    test "keeps only the subtitle files that still exist, in order" do
+      subtitle_directory = Path.join(Application.get_env(:pinchflat, :media_directory), "#{:rand.uniform(1_000_000)}")
+
+      [de_filepath, en_filepath, es_filepath, fr_filepath] =
+        Enum.map(~w(de en es fr), &Path.join(subtitle_directory, "media.#{&1}.srt"))
+
+      # Every subtitle file but the Spanish one exists
+      Enum.each([de_filepath, en_filepath, fr_filepath], &FilesystemUtils.write_p!(&1, "subtitle"))
+
+      media_item =
+        media_item_fixture(%{
+          subtitle_filepaths: [["de", de_filepath], ["en", en_filepath], ["es", es_filepath], ["fr", fr_filepath]]
+        })
+
+      assert [updated_media_item] = FileSyncing.sync_file_presence_on_disk([media_item])
+      assert updated_media_item.subtitle_filepaths == [["de", de_filepath], ["en", en_filepath], ["fr", fr_filepath]]
+    end
+
+    test "removes subtitle entries without a filepath" do
+      media_item = media_item_with_attachments()
+      en_filepath = get_subtitle_filepath(media_item, "en")
+      {:ok, media_item} = Media.update_media_item(media_item, %{subtitle_filepaths: [["en", en_filepath], ["ja", nil]]})
+
+      assert [updated_media_item] = FileSyncing.sync_file_presence_on_disk([media_item])
+      assert updated_media_item.subtitle_filepaths == [["en", en_filepath]]
     end
   end
 
