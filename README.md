@@ -74,6 +74,7 @@ If it doesn't work for your use case, please make a feature request! You can als
 - Sponsorblock integration
 - \[Advanced\] allows custom `yt-dlp` options ([docs](https://github.com/kieraneglin/pinchflat/wiki/%5BAdvanced%5D-Custom-yt%E2%80%90dlp-options))
 - \[Advanced\] supports running custom scripts when after downloading/deleting media (alpha - [docs](https://github.com/kieraneglin/pinchflat/wiki/%5BAdvanced%5D-Custom-lifecycle-scripts))
+  - On startup, Pinchflat waits up to 60 seconds for the `app_init` script to finish, then carries on and leaves it running. Redirect the output of any background process it starts (eg: `my-daemon > /dev/null 2>&1 &`) so the script can finish
 
 ## Screenshots
 

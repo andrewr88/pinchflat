@@ -10,6 +10,7 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
   alias Pinchflat.Boot.PreJobStartupTasks
   alias Pinchflat.JobFixtures.TestJobWorker
   alias Pinchflat.Sources.SourceDirectoryUpdateWorker
+  alias Pinchflat.Lifecycle.UserScripts.CommandRunner, as: UserScriptRunner
 
   setup do
     stub(YtDlpRunnerMock, :version, fn -> {:ok, "1"} end)
@@ -317,13 +318,71 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
 
   describe "run_app_init_script" do
     test "calls the app_init user script runner" do
+      test_pid = self()
+
+      # The runner isn't called from the test's process, so the data is checked here instead
       expect(UserScriptRunnerMock, :run, fn :app_init, data ->
-        assert data == %{}
+        send(test_pid, {:app_init_data, data})
 
         {:ok, "", 0}
       end)
 
       PreJobStartupTasks.init(%{})
+
+      assert_received {:app_init_data, data}
+      assert data == %{}
+    end
+
+    # Some users rely on it finishing before any jobs run
+    test "waits for a script that finishes within the timeout" do
+      finished_file = tmpfile_path("app_init_finished")
+      write_lifecycle_file("#!/bin/bash\nsleep 0.2\ntouch '#{finished_file}'\necho finished\n")
+      expect_real_app_init_run()
+
+      log = capture_warnings(fn -> assert {:ok, _} = PreJobStartupTasks.init(%{app_init_timeout_ms: 5_000}) end)
+
+      assert File.exists?(finished_file)
+      assert_received {:app_init_result, {:ok, "finished\n", 0}}
+      refute log =~ "still running"
+    end
+
+    # Users start long-running processes from it, which stopping it would also stop
+    test "stops waiting for a script that's still running after the timeout, but leaves it running" do
+      release_file = tmpfile_path("app_init_release")
+      write_lifecycle_file("#!/bin/bash\n" <> wait_for_release(release_file))
+      expect_real_app_init_run()
+      started_at = System.monotonic_time(:millisecond)
+
+      log = capture_warnings(fn -> assert {:ok, _} = PreJobStartupTasks.init(%{app_init_timeout_ms: 300}) end)
+
+      assert System.monotonic_time(:millisecond) - started_at < 5_000
+      assert log =~ "The app_init user script at #{UserScriptRunner.lifecycle_filepath()} is still running"
+
+      # It can only finish once it's released, so it was still running when startup carried on
+      File.touch!(release_file)
+      assert_receive {:app_init_result, result}, 15_000
+      assert result == {:ok, "released\n", 0}
+    end
+
+    # The script only counts as finished once its output is closed, and the background process has it open
+    test "stops waiting for a script whose background process keeps running after the timeout" do
+      release_file = tmpfile_path("app_init_release")
+      write_lifecycle_file("#!/bin/bash\n(\n#{wait_for_release(release_file)}) &\necho started\n")
+      expect_real_app_init_run()
+
+      log = capture_warnings(fn -> assert {:ok, _} = PreJobStartupTasks.init(%{app_init_timeout_ms: 300}) end)
+
+      assert log =~ "still running"
+
+      File.touch!(release_file)
+      assert_receive {:app_init_result, result}, 15_000
+      assert result == {:ok, "started\nreleased\n", 0}
+    end
+
+    test "carries on starting up if running the script crashes" do
+      expect(UserScriptRunnerMock, :run, fn :app_init, _data -> raise "boom" end)
+
+      assert {:ok, _} = PreJobStartupTasks.init(%{})
     end
   end
 
@@ -332,5 +391,49 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
     Repo.update_all(where(Oban.Job, id: ^job.id), set: [state: state, attempt: attempt])
 
     job
+  end
+
+  # The user script the real runner runs, removed once the test is done
+  defp write_lifecycle_file(contents) do
+    filepath = UserScriptRunner.lifecycle_filepath()
+    FilesystemUtils.write_p!(filepath, contents)
+    File.chmod!(filepath, 0o755)
+    on_exit(fn -> File.rm(filepath) end)
+  end
+
+  # Runs the real user script, sending its result to the test once it's finished
+  defp expect_real_app_init_run do
+    test_pid = self()
+
+    expect(UserScriptRunnerMock, :run, fn :app_init, data ->
+      result = UserScriptRunner.run(:app_init, data)
+      send(test_pid, {:app_init_result, result})
+
+      result
+    end)
+  end
+
+  # Script lines that wait for the file to exist, then output "released". They give up after 10 seconds
+  defp wait_for_release(filepath) do
+    """
+    for _ in {1..200}; do
+      if [ -e '#{filepath}' ]; then echo released; exit 0; fi
+      sleep 0.05
+    done
+    echo 'not released'
+    exit 1
+    """
+  end
+
+  defp tmpfile_path(name) do
+    Path.join(Application.get_env(:pinchflat, :tmpfile_directory), "#{name}-#{System.unique_integer([:positive])}")
+  end
+
+  defp capture_warnings(fun) do
+    # The test env only logs critical messages so let this module's logging through
+    Logger.put_module_level(PreJobStartupTasks, :all)
+    on_exit(fn -> Logger.delete_module_level(PreJobStartupTasks) end)
+
+    capture_log([level: :warning], fun)
   end
 end

@@ -18,6 +18,10 @@ defmodule Pinchflat.Boot.PreJobStartupTasks do
 
   alias Pinchflat.Lifecycle.UserScripts.CommandRunner, as: UserScriptRunner
 
+  # How long startup waits for the app_init user script (see `run_app_init_script/1`).
+  # Tests can shorten it with an `:app_init_timeout_ms` key in the state passed to `init/1`
+  @app_init_timeout_ms 60_000
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, %{env: Application.get_env(:pinchflat, :env)}, opts)
   end
@@ -45,7 +49,7 @@ defmodule Pinchflat.Boot.PreJobStartupTasks do
     create_blank_yt_dlp_files()
     create_blank_user_script_file()
     apply_default_settings()
-    run_app_init_script()
+    run_app_init_script(Map.get(state, :app_init_timeout_ms, @app_init_timeout_ms))
 
     {:ok, state}
   end
@@ -176,10 +180,33 @@ defmodule Pinchflat.Boot.PreJobStartupTasks do
     error in ArgumentError -> {:error, Exception.message(error)}
   end
 
-  defp run_app_init_script do
+  # Jobs and the web server only start once this returns, and some users rely on the app_init script
+  # finishing first, so startup waits for it. But only for so long (60 seconds): a script that hangs, or
+  # that starts a background process without redirecting its output (the script only counts as finished
+  # once its output is closed), would otherwise stop the app from ever starting.
+  #
+  # The script isn't stopped once the wait is over. Some users start long-running processes from it, and
+  # the command wrapper kills the script and everything it started if the process running it goes away. So
+  # it runs in a process of its own that isn't linked to this one: it outlives the wait, and it can't stop
+  # the app from starting if it crashes. Its result is logged when it finishes, like any other command's.
+  defp run_app_init_script(timeout_ms) do
     runner = Application.get_env(:pinchflat, :user_script_runner, UserScriptRunner)
+    {:ok, pid} = Task.start(fn -> runner.run(:app_init, %{}) end)
+    ref = Process.monitor(pid)
 
-    runner.run(:app_init, %{})
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    after
+      timeout_ms ->
+        Process.demonitor(ref, [:flush])
+
+        Logger.warning(
+          "The app_init user script at #{UserScriptRunner.lifecycle_filepath()} is still running after " <>
+            "#{div(timeout_ms, 1_000)} seconds; continuing startup without waiting for it. If it starts a " <>
+            "background process, redirect that process's output (eg: `my-daemon > /dev/null 2>&1 &`) so the " <>
+            "script can finish."
+        )
+    end
   end
 
   defp yt_dlp_runner do
