@@ -10,6 +10,8 @@ defmodule Pinchflat.Utils.EnvUtils do
   """
 
   @log_levels ~w(debug info notice warning error critical alert emergency all none)a
+  # The shortest key Phoenix takes
+  @secret_key_base_min_length 64
 
   @doc """
   Gets an environment variable's whole number greater than 0, or the default.
@@ -39,6 +41,21 @@ defmodule Pinchflat.Utils.EnvUtils do
     case get_env(name) do
       nil -> default
       value -> parse_log_level(value) || raise_invalid!(name, value, "one of #{Enum.join(@log_levels, ", ")}")
+    end
+  end
+
+  @doc """
+  Gets an environment variable's secret key base as-is, or else the key stored in the given file.
+  If the file doesn't exist or is empty, a random key is generated and stored in it so the same key
+  is used from then on. Only the file's owner can ever read a generated file. A stored key that's too
+  short raises a `RuntimeError` naming the file: replacing it would invalidate existing sessions.
+
+  Returns binary() | raises RuntimeError
+  """
+  def get_secret_key_base!(name, filepath) do
+    case get_env(name) do
+      nil -> read_or_generate_secret_key_base!(filepath)
+      value -> value
     end
   end
 
@@ -72,5 +89,66 @@ defmodule Pinchflat.Utils.EnvUtils do
 
   defp raise_invalid!(name, value, description) do
     raise ArgumentError, "#{name} is set to #{inspect(value)}, but it must be #{description}"
+  end
+
+  defp read_or_generate_secret_key_base!(filepath) do
+    case File.read(filepath) do
+      {:ok, contents} ->
+        stored_secret_key_base!(String.trim(contents), filepath)
+
+      {:error, :enoent} ->
+        generate_secret_key_base!(filepath)
+
+      {:error, reason} ->
+        raise "Can't read the secret key base in #{filepath}: #{:file.format_error(reason)}. Make sure " <>
+                "the user Pinchflat runs as can read it, or set SECRET_KEY_BASE"
+    end
+  end
+
+  # An empty file (eg: made with `touch`) is taken as not there
+  defp stored_secret_key_base!("", filepath), do: generate_secret_key_base!(filepath)
+
+  defp stored_secret_key_base!(key, filepath) do
+    if String.length(key) >= @secret_key_base_min_length do
+      key
+    else
+      raise "The secret key base in #{filepath} is too short: it must be at least " <>
+              "#{@secret_key_base_min_length} characters. Delete the file to have a new key generated, " <>
+              "or set SECRET_KEY_BASE"
+    end
+  end
+
+  defp generate_secret_key_base!(filepath) do
+    key = Base.encode64(:crypto.strong_rand_bytes(64), padding: false)
+
+    case create_private_file(filepath, key) do
+      :ok ->
+        key
+
+      {:error, reason} ->
+        raise "Can't store a new secret key base in #{filepath}: #{:file.format_error(reason)}. Make sure " <>
+                "the user Pinchflat runs as can write to #{Path.dirname(filepath)}, or set SECRET_KEY_BASE"
+    end
+  end
+
+  # A new file can't be given its permissions when it's created, and whoever opens it before they're
+  # restricted can keep reading it. So it's written in a new directory only the current user can get
+  # into, then moved into place (replacing any file there), so nobody else can ever open it
+  defp create_private_file(filepath, content) do
+    staging_dir = "#{filepath}-#{Base.url_encode64(:crypto.strong_rand_bytes(6))}.tmp"
+    staging_filepath = Path.join(staging_dir, Path.basename(filepath))
+
+    with :ok <- File.mkdir_p(Path.dirname(filepath)),
+         :ok <- File.mkdir(staging_dir) do
+      try do
+        with :ok <- File.chmod(staging_dir, 0o700),
+             :ok <- File.write(staging_filepath, content, [:exclusive]),
+             :ok <- File.chmod(staging_filepath, 0o600) do
+          File.rename(staging_filepath, filepath)
+        end
+      after
+        File.rm_rf(staging_dir)
+      end
+    end
   end
 end

@@ -171,6 +171,7 @@ If you change this setting and it works well for you, please leave a comment on 
 | `UMASK`                     | No        | `022`                     | Unraid users may want to set this to `000`                                                                                                |
 | `BASIC_AUTH_USERNAME`       | No        |                           | See [authentication docs](https://github.com/kieraneglin/pinchflat/wiki/Username-and-Password)                                            |
 | `BASIC_AUTH_PASSWORD`       | No        |                           | See [authentication docs](https://github.com/kieraneglin/pinchflat/wiki/Username-and-Password)                                            |
+| `SECRET_KEY_BASE`           | No        |                           | Signs sessions. If unset, a random key is generated and stored in `/config/secret_key_base`. Delete that file and restart to rotate it    |
 | `EXPOSE_FEED_ENDPOINTS`     | No        | `false`                   | See [RSS feed docs](https://github.com/kieraneglin/pinchflat/wiki/Podcast-RSS-Feeds)                                                      |
 | `ENABLE_IPV6`               | No        | `false`                   | Setting to _any_ non-blank value will enable IPv6                                                                                         |
 | `JOURNAL_MODE`              | No        | `wal`                     | Set to `delete` if your config directory is stored on a network share (not recommended)                                                   |
