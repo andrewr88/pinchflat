@@ -106,13 +106,17 @@ defmodule Pinchflat.FastIndexing.YoutubeApi do
 
       keys ->
         pid = get_or_start_api_key_agent()
+        key_count = length(keys)
 
         current_index =
           Agent.get_and_update(pid, fn current ->
-            {current, rem(current + 1, length(keys))}
+            # The stored index can be out of range if keys were removed since the last call
+            index = rem(current, key_count)
+            {index, rem(index + 1, key_count)}
           end)
 
-        Logger.debug("Using YouTube API key: #{Enum.at(keys, current_index)}")
+        # Never log the key itself - logs are written to disk and downloadable from the UI
+        Logger.debug("Using YouTube API key #{current_index + 1} of #{key_count}")
         Enum.at(keys, current_index)
     end
   end

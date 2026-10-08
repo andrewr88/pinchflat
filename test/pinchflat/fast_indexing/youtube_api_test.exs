@@ -1,6 +1,7 @@
 defmodule Pinchflat.FastIndexing.YoutubeApiTest do
   use Pinchflat.DataCase
 
+  import ExUnit.CaptureLog
   import Pinchflat.SourcesFixtures
 
   alias Pinchflat.Settings
@@ -62,6 +63,38 @@ defmodule Pinchflat.FastIndexing.YoutubeApiTest do
       YoutubeApi.get_recent_media_ids(source)
       YoutubeApi.get_recent_media_ids(source)
       YoutubeApi.get_recent_media_ids(source)
+    end
+
+    test "still uses a valid API key if keys are removed mid-rotation", %{source: source} do
+      Settings.set(youtube_api_key: "key1, key2, key3")
+      expect(HTTPClientMock, :get, 2, fn _url, _headers -> {:ok, "{}"} end)
+
+      # leaves the rotation pointing at the third key
+      YoutubeApi.get_recent_media_ids(source)
+      YoutubeApi.get_recent_media_ids(source)
+
+      Settings.set(youtube_api_key: "key1, key2")
+
+      expect(HTTPClientMock, :get, fn url, _headers ->
+        assert url =~ "key=key1"
+        {:ok, "{}"}
+      end)
+
+      YoutubeApi.get_recent_media_ids(source)
+    end
+
+    test "does not log the API keys", %{source: source} do
+      # The test env only logs critical messages so let this module's logging through
+      Logger.put_module_level(YoutubeApi, :all)
+      on_exit(fn -> Logger.delete_module_level(YoutubeApi) end)
+
+      Settings.set(youtube_api_key: "secret-api-key-1, secret-api-key-2")
+      expect(HTTPClientMock, :get, fn _url, _headers -> {:ok, "{}"} end)
+
+      log = capture_log(fn -> YoutubeApi.get_recent_media_ids(source) end)
+
+      assert log =~ "Using YouTube API key"
+      refute log =~ "secret-api-key"
     end
 
     test "calls the expected URL", %{source: source} do
