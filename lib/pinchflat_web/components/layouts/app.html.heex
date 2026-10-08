@@ -5,7 +5,8 @@
     <.header params={@conn.params} />
     <main>
       <div class="mx-auto max-w-screen-2xl p-4 md:p-6 2xl:p-10">
-        <.flash_group flash={@flash} />
+        <%!-- Error pages use this layout for requests that never fetched the flash (eg: podcast feeds) --%>
+        <.flash_group flash={assigns[:flash] || %{}} />
         {@inner_content}
       </div>
     </main>
