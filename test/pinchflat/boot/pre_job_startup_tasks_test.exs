@@ -1,6 +1,7 @@
 defmodule Pinchflat.Boot.PreJobStartupTasksTest do
   use Pinchflat.DataCase
 
+  import ExUnit.CaptureLog
   import Pinchflat.JobFixtures
 
   alias Pinchflat.Settings
@@ -111,6 +112,54 @@ defmodule Pinchflat.Boot.PreJobStartupTasksTest do
       PreJobStartupTasks.init(%{})
 
       assert Settings.get!(:apprise_version)
+    end
+
+    test "keeps the stored yt_dlp version if it can't be fetched" do
+      stub(YtDlpRunnerMock, :version, fn -> {:error, "boom"} end)
+      Settings.set(yt_dlp_version: "2025.09.26")
+      Settings.set(apprise_version: nil)
+
+      assert {:ok, _} = PreJobStartupTasks.init(%{})
+
+      assert Settings.get!(:yt_dlp_version) == "2025.09.26"
+      assert Settings.get!(:apprise_version) == "2"
+    end
+
+    test "keeps the stored apprise version if it can't be fetched" do
+      stub(AppriseRunnerMock, :version, fn -> {:error, "boom"} end)
+      Settings.set(yt_dlp_version: nil)
+      Settings.set(apprise_version: "1.9.4")
+
+      assert {:ok, _} = PreJobStartupTasks.init(%{})
+
+      assert Settings.get!(:yt_dlp_version) == "1"
+      assert Settings.get!(:apprise_version) == "1.9.4"
+    end
+
+    test "keeps the stored apprise version and finishes booting if apprise isn't installed" do
+      # Outside of Docker apprise may not be installed. Its executable is then `nil`, which raises this
+      stub(AppriseRunnerMock, :version, fn ->
+        raise ArgumentError, "all arguments for System.cmd/3 must be binaries"
+      end)
+
+      expect(UserScriptRunnerMock, :run, fn :app_init, _data -> {:ok, "", 0} end)
+      Settings.set(apprise_version: "1.9.4")
+
+      assert {:ok, _} = PreJobStartupTasks.init(%{})
+
+      assert Settings.get!(:apprise_version) == "1.9.4"
+    end
+
+    test "logs a warning if a version can't be fetched" do
+      # The test env only logs critical messages so let this module's logging through
+      Logger.put_module_level(PreJobStartupTasks, :all)
+      on_exit(fn -> Logger.delete_module_level(PreJobStartupTasks) end)
+      stub(YtDlpRunnerMock, :version, fn -> {:error, "boom"} end)
+
+      log = capture_log([level: :warning], fn -> PreJobStartupTasks.init(%{}) end)
+
+      assert log =~ "yt_dlp_version"
+      assert log =~ "boom"
     end
   end
 

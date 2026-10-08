@@ -98,11 +98,28 @@ defmodule Pinchflat.Boot.PreJobStartupTasks do
   end
 
   defp apply_default_settings do
-    {:ok, yt_dlp_version} = yt_dlp_runner().version()
-    {:ok, apprise_version} = apprise_runner().version()
+    apply_version_setting(:yt_dlp_version, yt_dlp_runner())
+    apply_version_setting(:apprise_version, apprise_runner())
+  end
 
-    Settings.set(yt_dlp_version: yt_dlp_version)
-    Settings.set(apprise_version: apprise_version)
+  # The versions are only displayed in the UI, so failing to fetch one (eg: a broken
+  # executable) mustn't stop the app from booting. The stored version is kept instead
+  defp apply_version_setting(setting_name, runner) do
+    case fetch_version(runner) do
+      {:ok, version} ->
+        Settings.set([{setting_name, version}])
+
+      {:error, reason} ->
+        Logger.warning("Could not fetch #{setting_name}, keeping the stored value: #{inspect(reason)}")
+    end
+  end
+
+  # An executable that isn't installed is `nil`, which makes `System.cmd/3` raise
+  # instead of returning an error
+  defp fetch_version(runner) do
+    runner.version()
+  rescue
+    error in ArgumentError -> {:error, Exception.message(error)}
   end
 
   defp run_app_init_script do
