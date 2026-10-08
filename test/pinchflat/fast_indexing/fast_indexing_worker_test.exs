@@ -26,14 +26,14 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
 
   describe "perform/1" do
     test "calls out to Youtube RSS if enabled" do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, ""} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, ""} end)
       source = source_fixture(fast_index: true)
 
       perform_job(FastIndexingWorker, %{id: source.id})
     end
 
     test "reschedules itself if fast indexing is enabled" do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, ""} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, ""} end)
       source = source_fixture(fast_index: true)
       perform_job(FastIndexingWorker, %{id: source.id})
 
@@ -45,7 +45,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
     end
 
     test "reschedules itself if media IDs can't be fetched" do
-      expect(HTTPClientMock, :get, fn _url ->
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
         {:error, "HTTP request failed with status code 500: Internal Server Error"}
       end)
 
@@ -61,7 +61,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
     end
 
     test "does not reschedule if that would create a duplicate job" do
-      stub(HTTPClientMock, :get, fn _url -> {:ok, ""} end)
+      stub(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, ""} end)
       source = source_fixture(fast_index: true)
 
       perform_job(FastIndexingWorker, %{id: source.id})
@@ -71,7 +71,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
     end
 
     test "does not call out to Youtube RSS if disabled" do
-      expect(HTTPClientMock, :get, 0, fn _url -> {:ok, ""} end)
+      expect(HTTPClientMock, :get, 0, fn _url, _headers, _opts -> {:ok, ""} end)
       source = source_fixture(fast_index: false)
 
       perform_job(FastIndexingWorker, %{id: source.id})
@@ -99,7 +99,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
     test "sends a notification if new media was found" do
       source = source_fixture(fast_index: true)
 
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl ->
         {:ok, render_metadata(:media_metadata)}
@@ -119,7 +119,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
     test "doesn't send a notification if new media is not found" do
       source = source_fixture(fast_index: true)
 
-      expect(HTTPClientMock, :get, fn _url -> {:ok, ""} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, ""} end)
       expect(AppriseRunnerMock, :run, 0, fn _servers, _opts -> {:ok, ""} end)
 
       perform_job(FastIndexingWorker, %{id: source.id})
@@ -128,7 +128,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
     test "doesn't send a notification if media IDs can't be fetched" do
       source = source_fixture(fast_index: true)
 
-      expect(HTTPClientMock, :get, fn _url ->
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
         {:error, "HTTP request failed with status code 500: Internal Server Error"}
       end)
 
@@ -140,7 +140,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
     test "doesn't send a notification if the source doesn't download media" do
       source = source_fixture(fast_index: true, download_media: false)
 
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl ->
         {:ok, render_metadata(:media_metadata)}
@@ -154,7 +154,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingWorkerTest do
     test "doesn't send a notification if the media isn't pending download" do
       source = source_fixture(fast_index: true, title_filter_regex: "foobar")
 
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl ->
         {:ok, render_metadata(:media_metadata)}

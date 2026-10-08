@@ -21,7 +21,7 @@ defmodule Pinchflat.FastIndexing.YoutubeRssTest do
     test "calls the expected URL for channel sources" do
       source = source_fixture(collection_type: :channel, collection_id: "channel_id")
 
-      expect(HTTPClientMock, :get, fn url ->
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
         assert url =~ "https://www.youtube.com/feeds/videos.xml?channel_id=#{source.collection_id}"
 
         {:ok, ""}
@@ -33,7 +33,7 @@ defmodule Pinchflat.FastIndexing.YoutubeRssTest do
     test "calls the expected URL for playlist sources" do
       source = source_fixture(collection_type: :playlist, collection_id: "playlist_id")
 
-      expect(HTTPClientMock, :get, fn url ->
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
         assert url =~ "https://www.youtube.com/feeds/videos.xml?playlist_id=#{source.collection_id}"
 
         {:ok, ""}
@@ -42,14 +42,34 @@ defmodule Pinchflat.FastIndexing.YoutubeRssTest do
       assert {:ok, _} = YoutubeRss.get_recent_media_ids(source)
     end
 
-    test "returns an error if the HTTP request fails", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url -> {:error, ""} end)
+    test "sets request timeouts so a stalled response can't hang the caller", %{source: source} do
+      expect(HTTPClientMock, :get, fn _url, _headers, opts ->
+        assert is_integer(opts[:http_options][:timeout])
+        assert is_integer(opts[:http_options][:connect_timeout])
 
-      assert {:error, "Failed to fetch RSS feed"} = YoutubeRss.get_recent_media_ids(source)
+        {:ok, ""}
+      end)
+
+      assert {:ok, _} = YoutubeRss.get_recent_media_ids(source)
+    end
+
+    test "returns an error with the reason if the HTTP request fails", %{source: source} do
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
+        {:error, "HTTP request failed with status code 500: Internal Server Error"}
+      end)
+
+      assert {:error, "Failed to fetch RSS feed: HTTP request failed with status code 500: Internal Server Error"} =
+               YoutubeRss.get_recent_media_ids(source)
+    end
+
+    test "returns an error if the HTTP request fails with a non-string reason", %{source: source} do
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:error, {:failed_connect, []}} end)
+
+      assert {:error, "Failed to fetch RSS feed: {:failed_connect, []}"} = YoutubeRss.get_recent_media_ids(source)
     end
 
     test "returns the media IDs from the RSS feed", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url ->
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
         {:ok, "<yt:videoId>test_1</yt:videoId><yt:videoId>test_2</yt:videoId>"}
       end)
 
@@ -57,7 +77,7 @@ defmodule Pinchflat.FastIndexing.YoutubeRssTest do
     end
 
     test "strips whitespace from media IDs", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url ->
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
         {:ok, "<yt:videoId> test_1 </yt:videoId><yt:videoId> test_2 </yt:videoId>"}
       end)
 
@@ -65,7 +85,7 @@ defmodule Pinchflat.FastIndexing.YoutubeRssTest do
     end
 
     test "removes empty media IDs", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url ->
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
         {:ok, "<yt:videoId>test_1</yt:videoId><yt:videoId></yt:videoId>"}
       end)
 
@@ -73,7 +93,7 @@ defmodule Pinchflat.FastIndexing.YoutubeRssTest do
     end
 
     test "removes duplicate media IDs", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url ->
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
         {:ok, "<yt:videoId>test_1</yt:videoId><yt:videoId>test_1</yt:videoId>"}
       end)
 

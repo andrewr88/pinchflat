@@ -40,7 +40,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
 
   describe "index_and_kickoff_downloads/1" do
     test "enqueues a worker for each new media_id in the source's RSS feed", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       assert [media_item] = FastIndexingHelpers.index_and_kickoff_downloads(source)
 
@@ -50,7 +50,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "does not enqueue a new worker for the source's media IDs we already know about", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
       media_item_fixture(source_id: source.id, media_id: "test_1")
 
       assert [] = FastIndexingHelpers.index_and_kickoff_downloads(source)
@@ -60,7 +60,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
 
     test "kicks off a download task for all pending media but at a lower priority", %{source: source} do
       pending_item = media_item_fixture(source_id: source.id, media_filepath: nil)
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       assert [%MediaItem{}] = FastIndexingHelpers.index_and_kickoff_downloads(source)
 
@@ -72,7 +72,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     test "returns nothing but still kicks off pending downloads if media IDs can't be fetched", %{source: source} do
       pending_item = media_item_fixture(source_id: source.id, media_filepath: nil)
 
-      expect(HTTPClientMock, :get, fn _url ->
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
         {:error, "HTTP request failed with status code 500: Internal Server Error"}
       end)
 
@@ -83,13 +83,13 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "returns the found media items", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       assert [%MediaItem{}] = FastIndexingHelpers.index_and_kickoff_downloads(source)
     end
 
     test "does not enqueue a download job if the source does not allow it" do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
       source = source_fixture(%{download_media: false})
 
       assert [%MediaItem{}] = FastIndexingHelpers.index_and_kickoff_downloads(source)
@@ -98,7 +98,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "creates a download task record", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       assert [media_item] = FastIndexingHelpers.index_and_kickoff_downloads(source)
 
@@ -106,7 +106,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "passes the source's download options to the yt-dlp runner", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       expect(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, opts, _ot, _addl_opts ->
         assert {:output, "/tmp/test/media/%(title)S.%(ext)S"} in opts
@@ -118,7 +118,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "does not enqueue a download job if the media item does not match the format rules" do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       profile = media_profile_fixture(%{shorts_behaviour: :exclude})
       source = source_fixture(%{media_profile_id: profile.id})
@@ -145,7 +145,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "does not blow up if a media item cannot be created", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl ->
         {:ok, "{}"}
@@ -155,7 +155,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "does not blow up if a media item causes a yt-dlp error", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, _addl ->
         {:error, "message", 1}
@@ -167,7 +167,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
 
   describe "index_and_kickoff_downloads/1 when testing cookies" do
     test "sets use_cookies if the source uses cookies" do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, addl ->
         assert {:use_cookies, true} in addl
@@ -181,7 +181,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "does not set use_cookies if the source uses cookies when needed" do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, addl ->
         assert {:use_cookies, false} in addl
@@ -195,7 +195,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "does not set use_cookies if the source does not use cookies" do
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
 
       stub(YtDlpRunnerMock, :run, fn _url, :get_media_attributes, _opts, _ot, addl ->
         assert {:use_cookies, false} in addl
@@ -211,7 +211,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
 
   describe "index_and_kickoff_downloads/1 when testing backends" do
     test "uses the YouTube API if it is enabled", %{source: source} do
-      expect(HTTPClientMock, :get, fn url, _headers ->
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
         assert url =~ "https://youtube.googleapis.com/youtube/v3/playlistItems"
 
         {:ok, "{}"}
@@ -223,7 +223,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "the YouTube API creates records as expected", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url, _headers ->
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
         {:ok, ~s({ "items": [ {"contentDetails": {"videoId": "test_1"}} ] })}
       end)
 
@@ -233,8 +233,17 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "RSS is used as a backup if the API fails", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url, _headers -> {:error, ""} end)
-      expect(HTTPClientMock, :get, fn _url -> {:ok, "<yt:videoId>test_1</yt:videoId>"} end)
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
+        assert url =~ "https://youtube.googleapis.com/youtube/v3/playlistItems"
+
+        {:error, ""}
+      end)
+
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
+        assert url =~ "https://www.youtube.com/feeds/videos.xml"
+
+        {:ok, "<yt:videoId>test_1</yt:videoId>"}
+      end)
 
       Settings.set(youtube_api_key: "test_key")
 
@@ -242,7 +251,7 @@ defmodule Pinchflat.FastIndexing.FastIndexingHelpersTest do
     end
 
     test "RSS is used if the API is not enabled", %{source: source} do
-      expect(HTTPClientMock, :get, fn url ->
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
         assert url =~ "https://www.youtube.com/feeds/videos.xml"
 
         {:ok, "<yt:videoId>test_1</yt:videoId>"}

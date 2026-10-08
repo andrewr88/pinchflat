@@ -44,17 +44,17 @@ defmodule Pinchflat.FastIndexing.YoutubeApiTest do
     end
 
     test "rotates through API keys", %{source: source} do
-      expect(HTTPClientMock, :get, fn url, _headers ->
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
         assert url =~ "key=key1"
         {:ok, "{}"}
       end)
 
-      expect(HTTPClientMock, :get, fn url, _headers ->
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
         assert url =~ "key=key2"
         {:ok, "{}"}
       end)
 
-      expect(HTTPClientMock, :get, fn url, _headers ->
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
         assert url =~ "key=key1"
         {:ok, "{}"}
       end)
@@ -67,7 +67,7 @@ defmodule Pinchflat.FastIndexing.YoutubeApiTest do
 
     test "still uses a valid API key if keys are removed mid-rotation", %{source: source} do
       Settings.set(youtube_api_key: "key1, key2, key3")
-      expect(HTTPClientMock, :get, 2, fn _url, _headers -> {:ok, "{}"} end)
+      expect(HTTPClientMock, :get, 2, fn _url, _headers, _opts -> {:ok, "{}"} end)
 
       # leaves the rotation pointing at the third key
       YoutubeApi.get_recent_media_ids(source)
@@ -75,7 +75,7 @@ defmodule Pinchflat.FastIndexing.YoutubeApiTest do
 
       Settings.set(youtube_api_key: "key1, key2")
 
-      expect(HTTPClientMock, :get, fn url, _headers ->
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
         assert url =~ "key=key1"
         {:ok, "{}"}
       end)
@@ -89,7 +89,7 @@ defmodule Pinchflat.FastIndexing.YoutubeApiTest do
       on_exit(fn -> Logger.delete_module_level(YoutubeApi) end)
 
       Settings.set(youtube_api_key: "secret-api-key-1, secret-api-key-2")
-      expect(HTTPClientMock, :get, fn _url, _headers -> {:ok, "{}"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "{}"} end)
 
       log = capture_log(fn -> YoutubeApi.get_recent_media_ids(source) end)
 
@@ -98,7 +98,7 @@ defmodule Pinchflat.FastIndexing.YoutubeApiTest do
     end
 
     test "calls the expected URL", %{source: source} do
-      expect(HTTPClientMock, :get, fn url, headers ->
+      expect(HTTPClientMock, :get, fn url, headers, _opts ->
         api_base = "https://youtube.googleapis.com/youtube/v3/playlistItems"
         request_url = "#{api_base}?part=contentDetails&maxResults=50&playlistId=#{source.collection_id}&key=key1"
 
@@ -111,10 +111,21 @@ defmodule Pinchflat.FastIndexing.YoutubeApiTest do
       assert {:ok, _} = YoutubeApi.get_recent_media_ids(source)
     end
 
+    test "sets request timeouts so a stalled response can't hang the caller", %{source: source} do
+      expect(HTTPClientMock, :get, fn _url, _headers, opts ->
+        assert is_integer(opts[:http_options][:timeout])
+        assert is_integer(opts[:http_options][:connect_timeout])
+
+        {:ok, "{}"}
+      end)
+
+      assert {:ok, _} = YoutubeApi.get_recent_media_ids(source)
+    end
+
     test "replaces channel IDs with playlist IDs if needed" do
       source = source_fixture(collection_id: "UC_ABC123")
 
-      expect(HTTPClientMock, :get, fn url, _headers ->
+      expect(HTTPClientMock, :get, fn url, _headers, _opts ->
         assert url =~ "playlistId=UU_ABC123&"
 
         {:ok, "{}"}
@@ -124,13 +135,13 @@ defmodule Pinchflat.FastIndexing.YoutubeApiTest do
     end
 
     test "returns an empty list if no media is returned", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url, _headers -> {:ok, "{}"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:ok, "{}"} end)
 
       assert {:ok, []} = YoutubeApi.get_recent_media_ids(source)
     end
 
     test "returns media IDs if present", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url, _headers ->
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts ->
         {:ok,
          """
            {
@@ -146,7 +157,7 @@ defmodule Pinchflat.FastIndexing.YoutubeApiTest do
     end
 
     test "returns an error if the HTTP request fails", %{source: source} do
-      expect(HTTPClientMock, :get, fn _url, _headers -> {:error, "error"} end)
+      expect(HTTPClientMock, :get, fn _url, _headers, _opts -> {:error, "error"} end)
 
       assert {:error, "error"} = YoutubeApi.get_recent_media_ids(source)
     end
