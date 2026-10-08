@@ -1,4 +1,4 @@
-defmodule Pinchflat.Podcasts.RssFeedBuilder do
+defmodule PinchflatWeb.Podcasts.RssFeedBuilder do
   @moduledoc """
   Methods for building an RSS feed for a source and its media items.
   """

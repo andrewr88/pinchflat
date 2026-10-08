@@ -4,7 +4,7 @@ defmodule PinchflatWeb.Sources.MediaItemTableLive do
 
   alias Pinchflat.Repo
   alias Pinchflat.Sources
-  alias Pinchflat.Utils.NumberUtils
+  alias PinchflatWeb.Helpers.PaginationHelpers
 
   @limit 10
 
@@ -134,54 +134,49 @@ defmodule PinchflatWeb.Sources.MediaItemTableLive do
   defp fetch_pagination_attributes(base_query, page, ""), do: fetch_pagination_attributes(base_query, page, nil)
 
   defp fetch_pagination_attributes(base_query, page, nil) do
-    total_record_count = Repo.aggregate(base_query, :count, :id)
-    total_pages = max(ceil(total_record_count / @limit), 1)
-    page = NumberUtils.clamp(page, 1, total_pages)
+    pagination = PaginationHelpers.get_pagination_attributes(base_query, page, @limit)
 
     records =
-      fetch_records(base_query, page)
+      fetch_records(base_query, pagination)
       |> order_by(desc: :uploaded_at)
       |> Repo.all()
 
     %{
-      page: page,
-      total_pages: total_pages,
+      page: pagination.page,
+      total_pages: pagination.total_pages,
       records: records,
       search_term: nil,
-      total_record_count: total_record_count,
-      filtered_record_count: total_record_count
+      total_record_count: pagination.total_record_count,
+      filtered_record_count: pagination.total_record_count
     }
   end
 
+  # Pages through the search results. The unfiltered count is kept too: the table (and its search
+  # box) is only replaced with "Nothing Here!" when there's nothing to search
   defp fetch_pagination_attributes(base_query, page, search_term) do
     filtered_base_query = filtered_base_query(base_query, search_term)
-
     total_record_count = Repo.aggregate(base_query, :count, :id)
-    filtered_record_count = Repo.aggregate(filtered_base_query, :count, :id)
-    total_pages = max(ceil(filtered_record_count / @limit), 1)
-    page = NumberUtils.clamp(page, 1, total_pages)
+    pagination = PaginationHelpers.get_pagination_attributes(filtered_base_query, page, @limit)
 
     records =
-      fetch_records(filtered_base_query, page)
+      fetch_records(filtered_base_query, pagination)
       |> order_by(desc: fragment("rank"), desc: :uploaded_at)
       |> Repo.all()
 
     %{
-      page: page,
-      total_pages: total_pages,
+      page: pagination.page,
+      total_pages: pagination.total_pages,
       records: records,
       search_term: search_term,
       total_record_count: total_record_count,
-      filtered_record_count: filtered_record_count
+      filtered_record_count: pagination.total_record_count
     }
   end
 
-  defp fetch_records(base_query, page) do
-    offset = (page - 1) * @limit
-
+  defp fetch_records(base_query, pagination) do
     base_query
-    |> limit(^@limit)
-    |> offset(^offset)
+    |> limit(^pagination.limit)
+    |> offset(^pagination.offset)
   end
 
   defp generate_base_query(source, "pending") do

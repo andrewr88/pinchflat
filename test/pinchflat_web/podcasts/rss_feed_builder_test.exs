@@ -1,10 +1,10 @@
-defmodule Pinchflat.Podcasts.RssFeedBuilderTest do
+defmodule PinchflatWeb.Podcasts.RssFeedBuilderTest do
   use Pinchflat.DataCase
 
   import Pinchflat.MediaFixtures
   import Pinchflat.SourcesFixtures
 
-  alias Pinchflat.Podcasts.RssFeedBuilder
+  alias PinchflatWeb.Podcasts.RssFeedBuilder
 
   @datetime_format "%a, %d %b %Y %H:%M:%S %z"
 

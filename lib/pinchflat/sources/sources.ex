@@ -21,7 +21,6 @@ defmodule Pinchflat.Sources do
   alias Pinchflat.SlowIndexing.SlowIndexingHelpers
   alias Pinchflat.FastIndexing.FastIndexingHelpers
   alias Pinchflat.Metadata.SourceMetadataStorageWorker
-  alias Pinchflat.Media
   alias Pinchflat.Downloading.DownloadOptionBuilder
   alias Pinchflat.Metadata.MetadataFileHelpers
   alias Pinchflat.YtDlp.Media, as: YtDlpMedia
@@ -176,6 +175,24 @@ defmodule Pinchflat.Sources do
   """
   def change_source(%Source{} = source, attrs \\ %{}, validation_stage \\ :pre_insert) do
     Source.changeset(source, attrs, validation_stage)
+  end
+
+  @doc """
+  Checks if a source other than the given one uses the file at `filepath` as its NFO or one of
+  its images. Sources for the same channel (e.g. with different title filters) can share a
+  series directory, and so these files.
+
+  Returns boolean()
+  """
+  def file_used_by_another_source?(filepath, %Source{} = source) do
+    Source
+    |> where([s], s.id != ^source.id)
+    |> where(
+      [s],
+      s.nfo_filepath == ^filepath or s.poster_filepath == ^filepath or
+        s.fanart_filepath == ^filepath or s.banner_filepath == ^filepath
+    )
+    |> Repo.exists?()
   end
 
   @doc """
@@ -342,55 +359,26 @@ defmodule Pinchflat.Sources do
     end
   end
 
+  # Only called when the series_directory changes. Existing images and NFO move whatever the
+  # profile's download options are now: they may have been downloaded before one was turned off
   defp build_source_path_updates(source, new_series_directory) do
-    updates = %{series_directory: new_series_directory}
+    # The images keep their filenames in the new series_directory
+    image_updates =
+      for {field, filepath} <- Map.take(source, [:poster_filepath, :fanart_filepath, :banner_filepath]),
+          filepath,
+          into: %{},
+          do: {field, Path.join(new_series_directory, Path.basename(filepath))}
 
-    # Update source image paths if series_directory changed. Existing images and NFO move whatever
-    # the profile's download options are now: they may have been downloaded before one was turned off
-    if new_series_directory && source.series_directory != new_series_directory do
-      # Rebuild image paths based on new series_directory
-      # Extract filenames from old paths and rebuild in new directory
-      image_updates = %{}
+    nfo_updates =
+      if source.nfo_filepath do
+        %{nfo_filepath: Path.join(new_series_directory, "tvshow.nfo")}
+      else
+        %{}
+      end
 
-      image_updates =
-        if source.poster_filepath do
-          filename = Path.basename(source.poster_filepath)
-          Map.put(image_updates, :poster_filepath, Path.join(new_series_directory, filename))
-        else
-          image_updates
-        end
-
-      image_updates =
-        if source.fanart_filepath do
-          filename = Path.basename(source.fanart_filepath)
-          Map.put(image_updates, :fanart_filepath, Path.join(new_series_directory, filename))
-        else
-          image_updates
-        end
-
-      image_updates =
-        if source.banner_filepath do
-          filename = Path.basename(source.banner_filepath)
-          Map.put(image_updates, :banner_filepath, Path.join(new_series_directory, filename))
-        else
-          image_updates
-        end
-
-      updates = Map.merge(updates, image_updates)
-
-      # Update NFO filepath if it exists
-      updates =
-        if source.nfo_filepath do
-          new_nfo_filepath = Path.join(new_series_directory, "tvshow.nfo")
-          Map.put(updates, :nfo_filepath, new_nfo_filepath)
-        else
-          updates
-        end
-
-      updates
-    else
-      updates
-    end
+    %{series_directory: new_series_directory}
+    |> Map.merge(image_updates)
+    |> Map.merge(nfo_updates)
   end
 
   # Returns the {old_path, new_path} moves for the source's own files. The update map only
@@ -499,27 +487,14 @@ defmodule Pinchflat.Sources do
         updates
       end
 
-    # Rebuild thumbnail_filepath
-    # Thumbnails can be either:
-    # 1. In the metadata directory (based on media_item.id) - these don't need to move
-    # 2. Alongside the media file - these need to move with the media file
+    # Rebuild thumbnail_filepath if it moves with the media file. It's named after the media file but
+    # keeps its own extension: <media filepath without extension>-thumb.<thumbnail extension>
     updates =
-      if media_item.thumbnail_filepath do
-        metadata_dir = MetadataFileHelpers.metadata_directory_for(media_item)
-        old_thumbnail_dir = Path.dirname(media_item.thumbnail_filepath)
+      if thumbnail_moves_with_media_file?(media_item) do
+        new_thumbnail_filepath =
+          Path.rootname(new_media_filepath) <> "-thumb" <> Path.extname(media_item.thumbnail_filepath)
 
-        # Check if thumbnail is in metadata directory
-        if String.starts_with?(old_thumbnail_dir, metadata_dir) do
-          # Thumbnail is in metadata directory, doesn't need to move
-          updates
-        else
-          # Thumbnail is alongside media file, rebuild path. It's named after the media file but keeps
-          # its own extension: <media filepath without extension>-thumb.<thumbnail extension>
-          new_thumbnail_filepath =
-            Path.rootname(new_media_filepath) <> "-thumb" <> Path.extname(media_item.thumbnail_filepath)
-
-          Map.put(updates, :thumbnail_filepath, new_thumbnail_filepath)
-        end
+        Map.put(updates, :thumbnail_filepath, new_thumbnail_filepath)
       else
         updates
       end
@@ -575,13 +550,9 @@ defmodule Pinchflat.Sources do
         {old_subtitle_path, new_subtitle_path}
       end)
 
-    # Thumbnail file (only if it's not in metadata directory)
+    # Thumbnail file
     thumbnail_moves =
-      if media_item.thumbnail_filepath &&
-           !String.starts_with?(
-             Path.dirname(media_item.thumbnail_filepath),
-             MetadataFileHelpers.metadata_directory_for(media_item)
-           ) do
+      if thumbnail_moves_with_media_file?(media_item) do
         [{media_item.thumbnail_filepath, new_paths[:thumbnail_filepath]}]
       else
         []
@@ -596,6 +567,16 @@ defmodule Pinchflat.Sources do
     # Internal metadata files are stored in a metadata directory based on media_item.id,
     # so they don't need to move when the source directory changes
     Enum.filter(media_moves ++ subtitle_moves ++ thumbnail_moves ++ nfo_moves ++ info_json_moves, &file_needs_move?/1)
+  end
+
+  # A thumbnail is either in the media item's metadata directory (based on media_item.id), where it
+  # doesn't need to move, or alongside the media file, where it moves with the media file
+  defp thumbnail_moves_with_media_file?(%{thumbnail_filepath: nil}), do: false
+
+  defp thumbnail_moves_with_media_file?(media_item) do
+    metadata_directory = MetadataFileHelpers.metadata_directory_for(media_item)
+
+    not FilesystemUtils.inside_directory?(media_item.thumbnail_filepath, metadata_directory)
   end
 
   # Makes the moves in order and stops at the first failure.
@@ -725,23 +706,32 @@ defmodule Pinchflat.Sources do
     end
   end
 
+  # The NFO and images are in the series directory, which other sources can share, so a file
+  # another source still uses is kept. The paths come from yt-dlp, so a file outside the media
+  # directory is never deleted
   defp delete_source_files(source) do
-    mapped_struct = Map.from_struct(source)
+    media_directory = Application.get_env(:pinchflat, :media_directory)
 
-    Source.filepath_attributes()
-    |> Enum.map(fn field -> mapped_struct[field] end)
-    |> Enum.filter(&is_binary/1)
-    |> Enum.each(&FilesystemUtils.delete_file_and_remove_empty_directories/1)
+    source
+    |> filepaths_in(Source.filepath_attributes())
+    |> Enum.reject(&file_used_by_another_source?(&1, source))
+    |> Enum.each(&FilesystemUtils.delete_file_inside_directory(&1, media_directory))
   end
 
   defp delete_internal_metadata_files(source) do
     metadata = Repo.preload(source, :metadata).metadata || %SourceMetadata{}
-    mapped_struct = Map.from_struct(metadata)
 
-    SourceMetadata.filepath_attributes()
-    |> Enum.map(fn field -> mapped_struct[field] end)
-    |> Enum.filter(&is_binary/1)
+    metadata
+    |> filepaths_in(SourceMetadata.filepath_attributes())
     |> Enum.each(&FilesystemUtils.delete_file_and_remove_empty_directories/1)
+  end
+
+  # Returns the record's filepaths in the given fields that are set
+  defp filepaths_in(record, fields) do
+    record
+    |> Map.take(fields)
+    |> Map.values()
+    |> Enum.filter(&is_binary/1)
   end
 
   defp add_source_details_to_changeset(source, changeset) do
@@ -862,8 +852,8 @@ defmodule Pinchflat.Sources do
   defp maybe_run_indexing_task(changeset, source) do
     case changeset.data do
       # If the changeset is new (not persisted), attempt indexing whatever the index frequency,
-      # unless the source is disabled. Nothing downstream checks `enabled`, so indexing jobs for
-      # a disabled source would index and download anyway. Enabling it is handled as an update
+      # unless the source is disabled. The indexing workers skip disabled sources, so this just
+      # avoids enqueueing jobs that would do nothing. Enabling it is handled as an update
       %{__meta__: %{state: :built}} ->
         if source.enabled do
           SlowIndexingHelpers.kickoff_indexing_task(source)
@@ -873,8 +863,9 @@ defmodule Pinchflat.Sources do
           end
         end
 
-      # If the record has been persisted, only run indexing if the
-      # indexing frequency has been changed and is now greater than 0
+      # If the record has been persisted, (re)start or stop indexing when the source is enabled or
+      # disabled, or its index frequency or fast indexing changes. As above, indexing is only started
+      # for an enabled source to avoid enqueueing jobs that would do nothing
       %{__meta__: %{state: :loaded}} ->
         maybe_update_slow_indexing_task(changeset, source)
         maybe_update_fast_indexing_task(changeset, source)

@@ -25,7 +25,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
   returned by yt-dlp. Encountered errors are saved to the Media Item record. Saves
   the entire metadata response to the associated media_metadata record.
 
-  NOTE: related methods (like the download worker) won't download if Pthe media item's source
+  NOTE: related methods (like the download worker) won't download if the media item's source
   is set to not download media. However, I'm not enforcing that here since I need this for testing.
   This may change in the future but I'm not stressed.
 
@@ -78,8 +78,20 @@ defmodule Pinchflat.Downloading.MediaDownloader do
   #   - `:unknown` for any other errors, including those not related to yt-dlp
   # - If we retry using cookies, all of the above return values apply. The cookie retry
   #   logic is handled transparently as far as the caller is concerned
+  #
+  # yt-dlp's output file is deleted once all that's done (even if it raised), since recovering
+  # from an error can read it
   defp attempt_download_and_update_for_media_item(media_item, override_opts) do
     output_filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
+
+    try do
+      download_and_update_for_media_item(media_item, output_filepath, override_opts)
+    after
+      File.rm(output_filepath)
+    end
+  end
+
+  defp download_and_update_for_media_item(media_item, output_filepath, override_opts) do
     media_with_preloads = Repo.preload(media_item, [:metadata, source: :media_profile])
     # Checked before downloading, which can put a new media file there
     kept_media_filepath = kept_media_filepath(media_with_preloads, override_opts)
@@ -112,6 +124,8 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     end
   end
 
+  # The only recoverable errors are SponsorBlock ones (see `recoverable_errors/0`), so the
+  # download is retried without SponsorBlock
   defp attempt_recovery_from_error(
          media_with_preloads,
          output_filepath,
@@ -119,51 +133,42 @@ defmodule Pinchflat.Downloading.MediaDownloader do
          override_opts,
          kept_media_filepath
        ) do
-    # Check if this is a SponsorBlock error that we can retry without sponsorblock
-    is_sponsorblock_error = String.contains?(to_string(error_message), "SponsorBlock")
+    Logger.info("""
+    SponsorBlock error detected for media item ##{media_with_preloads.id}.
+    Retrying download without SponsorBlock options.
+    """)
 
-    if is_sponsorblock_error do
-      Logger.info("""
-      SponsorBlock error detected for media item ##{media_with_preloads.id}.
-      Retrying download without SponsorBlock options.
-      """)
+    case retry_download_without_sponsorblock(media_with_preloads, override_opts) do
+      {:ok, parsed_json} ->
+        Logger.info("""
+        Successfully recovered from SponsorBlock error for media item ##{media_with_preloads.id}
+        by retrying without SponsorBlock options.
+        """)
 
-      # Retry the download without sponsorblock options
-      case retry_download_without_sponsorblock(media_with_preloads, override_opts) do
-        {:ok, parsed_json} ->
-          Logger.info("""
-          Successfully recovered from SponsorBlock error for media item ##{media_with_preloads.id}
-          by retrying without SponsorBlock options.
-          """)
+        update_recovered_media_item(media_with_preloads, parsed_json, error_message, kept_media_filepath)
 
-          update_recovered_media_item(media_with_preloads, parsed_json, error_message, kept_media_filepath)
+      {:error, :unsuitable_for_download} ->
+        Logger.warning("""
+        Media item ##{media_with_preloads.id} became unsuitable for download during SponsorBlock retry.
+        Falling back to parse recovery.
+        """)
 
-        {:error, :unsuitable_for_download} ->
-          Logger.warning("""
-          Media item ##{media_with_preloads.id} became unsuitable for download during SponsorBlock retry.
-          Falling back to parse recovery.
-          """)
+        attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
 
-          attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
+      {:error, retry_error_message, _exit_code} ->
+        Logger.error("""
+        Retry without SponsorBlock failed for media item ##{media_with_preloads.id}: #{inspect(retry_error_message)}
+        """)
 
-        {:error, retry_error_message, _exit_code} ->
-          Logger.error("""
-          Retry without SponsorBlock failed for media item ##{media_with_preloads.id}: #{inspect(retry_error_message)}
-          """)
+        # Fall back to trying to parse the original output file
+        attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
 
-          # Fall back to trying to parse the original output file
-          attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
+      err ->
+        Logger.error("""
+        Unexpected error during SponsorBlock retry for media item ##{media_with_preloads.id}: #{inspect(err)}
+        """)
 
-        err ->
-          Logger.error("""
-          Unexpected error during SponsorBlock retry for media item ##{media_with_preloads.id}: #{inspect(err)}
-          """)
-
-          attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
-      end
-    else
-      # For non-SponsorBlock errors, try to parse the output file as before
-      attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
+        attempt_parse_recovery(media_with_preloads, output_filepath, error_message, kept_media_filepath)
     end
   end
 
@@ -173,7 +178,12 @@ defmodule Pinchflat.Downloading.MediaDownloader do
     # Keep the caller's options (eg: overwrite_behaviour) and only disable SponsorBlock
     override_opts = Keyword.put(override_opts, :skip_sponsorblock, true)
 
-    download_with_options(media_with_preloads.original_url, media_with_preloads, new_output_filepath, override_opts)
+    # The retry's JSON is returned already parsed, so its output file isn't needed afterwards
+    try do
+      download_with_options(media_with_preloads.original_url, media_with_preloads, new_output_filepath, override_opts)
+    after
+      File.rm(new_output_filepath)
+    end
   end
 
   # yt-dlp only writes the JSON to the output file once the media is downloaded and moved into place

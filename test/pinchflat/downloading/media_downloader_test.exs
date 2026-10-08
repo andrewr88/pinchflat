@@ -597,6 +597,109 @@ defmodule Pinchflat.Downloading.MediaDownloaderTest do
     end
   end
 
+  describe "download_for_media_item/3 when testing yt-dlp's output files" do
+    test "deletes the output file after downloading", %{media_item: media_item} do
+      test_pid = self()
+
+      expect(YtDlpRunnerMock, :run, 3, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, addl ->
+          send(test_pid, {:output_filepath, Keyword.fetch!(addl, :output_filepath)})
+          {:ok, render_metadata(:media_metadata)}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+      end)
+
+      assert {:ok, _} = MediaDownloader.download_for_media_item(media_item)
+
+      assert_received {:output_filepath, output_filepath}
+      refute File.exists?(output_filepath)
+    end
+
+    test "deletes the output file if the download fails", %{media_item: media_item} do
+      test_pid = self()
+
+      expect(YtDlpRunnerMock, :run, 2, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, addl ->
+          send(test_pid, {:output_filepath, Keyword.fetch!(addl, :output_filepath)})
+          {:error, "Some error", 1}
+      end)
+
+      assert {:error, :download_failed, _} = MediaDownloader.download_for_media_item(media_item)
+
+      assert_received {:output_filepath, output_filepath}
+      refute File.exists?(output_filepath)
+    end
+
+    test "deletes both output files after retrying without SponsorBlock", %{media_item: media_item} do
+      test_pid = self()
+
+      # Initial download attempt (fails)
+      expect(YtDlpRunnerMock, :run, 2, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, addl ->
+          send(test_pid, {:output_filepath, Keyword.fetch!(addl, :output_filepath)})
+          {:error, "Unable to communicate with SponsorBlock", 1}
+      end)
+
+      # Retry without SponsorBlock (succeeds)
+      expect(YtDlpRunnerMock, :run, 3, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, addl ->
+          send(test_pid, {:output_filepath, Keyword.fetch!(addl, :output_filepath)})
+          {:ok, render_metadata(:media_metadata)}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+      end)
+
+      assert {:recovered, _, _} = MediaDownloader.download_for_media_item(media_item)
+
+      assert_received {:output_filepath, output_filepath}
+      assert_received {:output_filepath, retry_output_filepath}
+      assert output_filepath != retry_output_filepath
+      refute File.exists?(output_filepath)
+      refute File.exists?(retry_output_filepath)
+    end
+
+    # Recovering after the retry fails reads the first download's output file, so it's only deleted afterwards
+    test "deletes both output files after recovering from the first one", %{media_item: media_item} do
+      test_pid = self()
+
+      expect(YtDlpRunnerMock, :run, 5, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, addl ->
+          output_filepath = Keyword.fetch!(addl, :output_filepath)
+          send(test_pid, {:output_filepath, output_filepath})
+          File.write!(output_filepath, render_metadata(:media_metadata))
+
+          {:error, "Unable to communicate with SponsorBlock", 1}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+      end)
+
+      assert {:recovered, _, _} = MediaDownloader.download_for_media_item(media_item)
+
+      assert_received {:output_filepath, output_filepath}
+      assert_received {:output_filepath, retry_output_filepath}
+      refute File.exists?(output_filepath)
+      refute File.exists?(retry_output_filepath)
+    end
+  end
+
   describe "download_for_media_item/3 when testing cookie retries" do
     test "retries with cookies if we think it would help and the source allows" do
       expect(YtDlpRunnerMock, :run, 4, fn

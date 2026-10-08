@@ -1,9 +1,9 @@
-defmodule Pinchflat.Podcasts.OpmlFeedBuilderTest do
+defmodule PinchflatWeb.Podcasts.OpmlFeedBuilderTest do
   use Pinchflat.DataCase
 
   import Pinchflat.SourcesFixtures
 
-  alias Pinchflat.Podcasts.OpmlFeedBuilder
+  alias PinchflatWeb.Podcasts.OpmlFeedBuilder
 
   setup do
     source = source_fixture()

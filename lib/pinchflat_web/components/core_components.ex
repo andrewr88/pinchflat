@@ -251,7 +251,7 @@ defmodule PinchflatWeb.CoreComponents do
   attr :type, :string,
     default: "text",
     values: ~w(checkbox color date datetime-local email file hidden month number password
-            checkbox_group toggle range radio search select tel text textarea time url week)
+            checkbox_group toggle range radio search select tel text time url week)
 
   attr :field, Phoenix.HTML.FormField, doc: "a form field struct retrieved from the form, for example: @form[:email]"
 
@@ -299,8 +299,7 @@ defmodule PinchflatWeb.CoreComponents do
         {@label}
         <span :if={@label_suffix} class="text-xs text-bodydark">{@label_suffix}</span>
       </label>
-      <.help :if={@help}>{if @html_help, do: Phoenix.HTML.raw(@help), else: @help}</.help>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.help_and_errors help={@help} html_help={@html_help} errors={@errors} />
     </div>
     """
   end
@@ -328,8 +327,7 @@ defmodule PinchflatWeb.CoreComponents do
           </label>
         </div>
       </section>
-      <.help :if={@help}>{if @html_help, do: Phoenix.HTML.raw(@help), else: @help}</.help>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.help_and_errors help={@help} html_help={@html_help} errors={@errors} />
     </div>
     """
   end
@@ -360,8 +358,7 @@ defmodule PinchflatWeb.CoreComponents do
           >
           </div>
         </div>
-        <.help :if={@help}>{if @html_help, do: Phoenix.HTML.raw(@help), else: @help}</.help>
-        <.error :for={msg <- @errors}>{msg}</.error>
+        <.help_and_errors help={@help} html_help={@html_help} errors={@errors} />
       </div>
     </div>
     """
@@ -391,32 +388,7 @@ defmodule PinchflatWeb.CoreComponents do
         </select>
         {render_slot(@inner_block)}
       </div>
-      <.help :if={@help}>{if @html_help, do: Phoenix.HTML.raw(@help), else: @help}</.help>
-      <.error :for={msg <- @errors}>{msg}</.error>
-    </div>
-    """
-  end
-
-  def input(%{type: "textarea"} = assigns) do
-    ~H"""
-    <div phx-feedback-for={@name}>
-      <.label for={@id}>
-        {@label}<span :if={@label_suffix} class="text-xs text-bodydark">{@label_suffix}</span>
-      </.label>
-      <textarea
-        id={@id}
-        name={@name}
-        class={[
-          "mt-2 block w-full rounded-lg text-zinc-900 focus:ring-0 sm:text-sm sm:leading-6",
-          "min-h-[6rem] phx-no-feedback:border-zinc-300 phx-no-feedback:focus:border-zinc-400",
-          @inputclass,
-          @errors == [] && "border-zinc-300 focus:border-zinc-400",
-          @errors != [] && "border-rose-400 focus:border-rose-400"
-        ]}
-        {@rest}
-      ><%= Phoenix.HTML.Form.normalize_value("textarea", @value) %></textarea>
-      <.help :if={@help}>{if @html_help, do: Phoenix.HTML.raw(@help), else: @help}</.help>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.help_and_errors help={@help} html_help={@html_help} errors={@errors} />
     </div>
     """
   end
@@ -445,9 +417,20 @@ defmodule PinchflatWeb.CoreComponents do
         />
         {render_slot(@input_append)}
       </div>
-      <.help :if={@help}>{if @html_help, do: Phoenix.HTML.raw(@help), else: @help}</.help>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.help_and_errors help={@help} html_help={@html_help} errors={@errors} />
     </div>
+    """
+  end
+
+  attr :help, :string, default: nil
+  attr :html_help, :boolean, default: false
+  attr :errors, :list, default: []
+
+  # The help text and errors shown below an input
+  defp help_and_errors(assigns) do
+    ~H"""
+    <.help :if={@help}>{if @html_help, do: Phoenix.HTML.raw(@help), else: @help}</.help>
+    <.error :for={msg <- @errors}>{msg}</.error>
     """
   end
 

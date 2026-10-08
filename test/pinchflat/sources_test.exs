@@ -1052,12 +1052,70 @@ defmodule Pinchflat.SourcesTest do
     end
 
     test "deletes the source's non-metadata files" do
-      filepath = FilesystemUtils.generate_metadata_tmpfile(:nfo)
+      filepath =
+        Path.join([Application.get_env(:pinchflat, :media_directory), "show #{:rand.uniform(1_000_000)}", "tvshow.nfo"])
+
+      FilesystemUtils.write_p!(filepath, "NFO")
       source = source_fixture(%{nfo_filepath: filepath})
 
       assert {:ok, _} = Sources.delete_source(source, delete_files: true)
 
       refute File.exists?(filepath)
+    end
+
+    # Sources for the same channel (e.g. with different title filters) share a series directory
+    test "keeps the NFO and images another source still uses" do
+      series_directory =
+        Path.join(Application.get_env(:pinchflat, :media_directory), "shared show #{:rand.uniform(1_000_000)}")
+
+      shared_filepaths = %{
+        nfo_filepath: Path.join(series_directory, "tvshow.nfo"),
+        poster_filepath: Path.join(series_directory, "poster.jpg")
+      }
+
+      own_fanart_filepath = Path.join(series_directory, "fanart.jpg")
+      Enum.each([own_fanart_filepath | Map.values(shared_filepaths)], &FilesystemUtils.write_p!(&1, "contents"))
+
+      source = source_fixture(Map.put(shared_filepaths, :fanart_filepath, own_fanart_filepath))
+      _other_source = source_fixture(shared_filepaths)
+
+      assert {:ok, _} = Sources.delete_source(source, delete_files: true)
+
+      assert File.exists?(shared_filepaths.nfo_filepath)
+      assert File.exists?(shared_filepaths.poster_filepath)
+      refute File.exists?(own_fanart_filepath)
+
+      File.rm_rf!(series_directory)
+    end
+
+    # The paths come from yt-dlp
+    test "doesn't delete the source's files outside the media directory" do
+      outside_filepath = FilesystemUtils.generate_metadata_tmpfile(:nfo)
+      source = source_fixture(%{nfo_filepath: outside_filepath})
+
+      assert {:ok, _} = Sources.delete_source(source, delete_files: true)
+
+      assert File.exists?(outside_filepath)
+
+      File.rm!(outside_filepath)
+    end
+
+    test "keeps the media directory itself once it's empty" do
+      original_media_directory = Application.get_env(:pinchflat, :media_directory)
+      on_exit(fn -> Application.put_env(:pinchflat, :media_directory, original_media_directory) end)
+
+      media_directory = Path.join(System.tmp_dir!(), "sources_test_media_#{:rand.uniform(1_000_000)}")
+      on_exit(fn -> File.rm_rf(media_directory) end)
+      Application.put_env(:pinchflat, :media_directory, media_directory)
+
+      nfo_filepath = Path.join(media_directory, "tvshow.nfo")
+      FilesystemUtils.write_p!(nfo_filepath, "NFO")
+      source = source_fixture(%{nfo_filepath: nfo_filepath})
+
+      assert {:ok, _} = Sources.delete_source(source, delete_files: true)
+
+      refute File.exists?(nfo_filepath)
+      assert File.dir?(media_directory)
     end
 
     test "deletes the source's images, NFO and metadata files, and its series directory once it's empty" do
@@ -1118,6 +1176,27 @@ defmodule Pinchflat.SourcesTest do
       assert {:ok, _} = Sources.delete_source(source, delete_files: true)
 
       refute File.exists?(downloaded_filepath)
+    end
+  end
+
+  describe "file_used_by_another_source?/2" do
+    test "returns true if another source uses the file as its NFO or one of its images" do
+      source = source_fixture()
+
+      for field <- Source.filepath_attributes() do
+        filepath = "/tmp/test/media/show/#{field}"
+        _other_source = source_fixture(%{field => filepath})
+
+        assert Sources.file_used_by_another_source?(filepath, source)
+      end
+    end
+
+    test "returns false if only the given source uses the file" do
+      filepath = "/tmp/test/media/show/tvshow.nfo"
+      source = source_fixture(%{nfo_filepath: filepath})
+      _other_source = source_fixture(%{nfo_filepath: "/tmp/test/media/other show/tvshow.nfo"})
+
+      refute Sources.file_used_by_another_source?(filepath, source)
     end
   end
 

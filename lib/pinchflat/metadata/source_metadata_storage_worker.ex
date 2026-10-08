@@ -6,8 +6,6 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorker do
     tags: ["media_source", "source_metadata", "remote_metadata", "show_in_dashboard"],
     max_attempts: 3
 
-  import Ecto.Query, warn: false
-
   require Logger
 
   alias __MODULE__
@@ -136,7 +134,7 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorker do
     old_source
     |> source_filepaths()
     |> Enum.filter(&File.exists?/1)
-    |> Enum.reject(&(same_file_as_any?(&1, new_filepaths) or used_by_another_source?(&1, old_source)))
+    |> Enum.reject(&(same_file_as_any?(&1, new_filepaths) or Sources.file_used_by_another_source?(&1, old_source)))
     |> Enum.each(&FilesystemUtils.delete_file_inside_directory(&1, media_directory))
   end
 
@@ -151,17 +149,6 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorker do
     Enum.any?(other_filepaths, fn other_filepath ->
       File.exists?(other_filepath) and FilesystemUtils.filepaths_reference_same_file?(filepath, other_filepath)
     end)
-  end
-
-  defp used_by_another_source?(filepath, source) do
-    Source
-    |> where([s], s.id != ^source.id)
-    |> where(
-      [s],
-      s.nfo_filepath == ^filepath or s.poster_filepath == ^filepath or
-        s.fanart_filepath == ^filepath or s.banner_filepath == ^filepath
-    )
-    |> Repo.exists?()
   end
 
   defp fetch_metadata_for_source(source) do

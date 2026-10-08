@@ -157,7 +157,7 @@ defmodule Pinchflat.Sources.Source do
     ~w(__meta__ __struct__ metadata tasks media_items)a
   end
 
-  def youtube_channel_or_playlist_regex do
+  defp youtube_channel_or_playlist_regex do
     # Validate that the original URL is not a video URL
     # Also matches if the string does NOT contain youtube.com or youtu.be. This preserves my tenuous support
     # for non-youtube sources.

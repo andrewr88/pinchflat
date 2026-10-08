@@ -11,7 +11,6 @@ defmodule Pinchflat.Media.MediaItem do
 
   alias __MODULE__
   alias Pinchflat.Repo
-  alias Pinchflat.Sources
   alias Pinchflat.Tasks.Task
   alias Pinchflat.Sources.Source
   alias Pinchflat.Metadata.MediaMetadata
@@ -167,7 +166,7 @@ defmodule Pinchflat.Media.MediaItem do
 
   defp do_update_upload_date_index(%{changes: changes} = changeset) when is_map_key(changes, :uploaded_at) do
     source_id = get_field(changeset, :source_id)
-    source = Sources.get_source!(source_id)
+    source = Repo.get!(Source, source_id)
     # Channels should count down from 99, playlists should count up from 0
     # This reflects the fact that channels prepend new videos to the top of the list
     # and playlists append new videos to the bottom of the list.

@@ -4,9 +4,9 @@ defmodule PinchflatWeb.Podcasts.PodcastController do
   alias Pinchflat.Repo
   alias Pinchflat.Sources.Source
   alias Pinchflat.Media.MediaItem
-  alias Pinchflat.Podcasts.RssFeedBuilder
-  alias Pinchflat.Podcasts.OpmlFeedBuilder
   alias Pinchflat.Podcasts.PodcastHelpers
+  alias PinchflatWeb.Podcasts.RssFeedBuilder
+  alias PinchflatWeb.Podcasts.OpmlFeedBuilder
   alias PinchflatWeb.Router.Helpers, as: Routes
 
   def opml_feed(conn, _params) do

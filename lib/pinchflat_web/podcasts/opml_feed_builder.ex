@@ -1,4 +1,4 @@
-defmodule Pinchflat.Podcasts.OpmlFeedBuilder do
+defmodule PinchflatWeb.Podcasts.OpmlFeedBuilder do
   @moduledoc """
   Methods for building an OPML feed for a list of sources.
   """

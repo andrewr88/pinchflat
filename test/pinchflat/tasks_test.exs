@@ -30,13 +30,6 @@ defmodule Pinchflat.TasksTest do
     end
   end
 
-  describe "list_tasks/0" do
-    test "returns all tasks" do
-      task = task_fixture()
-      assert Tasks.list_tasks() == [task]
-    end
-  end
-
   describe "list_tasks_for/3" do
     test "lets you specify which record type/ID to join on" do
       source = source_fixture()
@@ -301,13 +294,6 @@ defmodule Pinchflat.TasksTest do
       for task <- tasks do
         assert Repo.reload!(task)
       end
-    end
-  end
-
-  describe "change_task/1" do
-    test "returns a task changeset" do
-      task = task_fixture()
-      assert %Ecto.Changeset{} = Tasks.change_task(task)
     end
   end
 

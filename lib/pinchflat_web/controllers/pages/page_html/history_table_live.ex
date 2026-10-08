@@ -3,7 +3,7 @@ defmodule Pinchflat.Pages.HistoryTableLive do
   use Pinchflat.Media.MediaQuery
 
   alias Pinchflat.Repo
-  alias Pinchflat.Utils.NumberUtils
+  alias PinchflatWeb.Helpers.PaginationHelpers
   alias PinchflatWeb.CustomComponents.TextComponents
 
   @limit 5
@@ -110,20 +110,21 @@ defmodule Pinchflat.Pages.HistoryTableLive do
   end
 
   defp fetch_pagination_attributes(base_query, page) do
-    total_record_count = Repo.aggregate(base_query, :count, :id)
-    total_pages = max(ceil(total_record_count / @limit), 1)
-    page = NumberUtils.clamp(page, 1, total_pages)
-    records = fetch_records(base_query, page)
+    pagination = PaginationHelpers.get_pagination_attributes(base_query, page, @limit)
+    records = fetch_records(base_query, pagination)
 
-    %{page: page, total_pages: total_pages, records: records, total_record_count: total_record_count}
+    %{
+      page: pagination.page,
+      total_pages: pagination.total_pages,
+      records: records,
+      total_record_count: pagination.total_record_count
+    }
   end
 
-  defp fetch_records(base_query, page) do
-    offset = (page - 1) * @limit
-
+  defp fetch_records(base_query, pagination) do
     base_query
-    |> limit(^@limit)
-    |> offset(^offset)
+    |> limit(^pagination.limit)
+    |> offset(^pagination.offset)
     |> Repo.all()
     |> Repo.preload(:source)
   end

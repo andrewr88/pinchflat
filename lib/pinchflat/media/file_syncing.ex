@@ -4,7 +4,6 @@ defmodule Pinchflat.Media.FileSyncing do
   """
 
   alias Pinchflat.Media
-  alias Pinchflat.Utils.MapUtils
   alias Pinchflat.Media.MediaItem
   alias Pinchflat.Utils.FilesystemUtils, as: FSUtils
 
@@ -25,9 +24,9 @@ defmodule Pinchflat.Media.FileSyncing do
     non_subtitle_keys = MediaItem.filepath_attributes() -- [:subtitle_filepaths]
 
     old_non_subtitles = Map.take(old_media_item, non_subtitle_keys)
-    old_subtitles = MapUtils.from_nested_list(old_media_item.subtitle_filepaths)
+    old_subtitles = from_nested_list(old_media_item.subtitle_filepaths)
     new_non_subtitles = Map.take(new_media_item, non_subtitle_keys)
-    new_subtitles = MapUtils.from_nested_list(new_media_item.subtitle_filepaths)
+    new_subtitles = from_nested_list(new_media_item.subtitle_filepaths)
 
     handle_file_deletion(old_non_subtitles, new_non_subtitles)
     handle_file_deletion(old_subtitles, new_subtitles)
@@ -73,7 +72,7 @@ defmodule Pinchflat.Media.FileSyncing do
 
   defp sync_media_item_files(media_item) do
     non_subtitle_keys = MediaItem.filepath_attributes() -- [:subtitle_filepaths]
-    subtitle_keys = MapUtils.from_nested_list(media_item.subtitle_filepaths)
+    subtitle_keys = from_nested_list(media_item.subtitle_filepaths)
     non_subtitles = Map.take(media_item, non_subtitle_keys)
 
     # This one is checking for the negative (ie: only update if the file doesn't exist)
@@ -91,5 +90,13 @@ defmodule Pinchflat.Media.FileSyncing do
       end)
 
     Map.put(new_non_subtitle_attrs, :subtitle_filepaths, new_subtitle_attrs)
+  end
+
+  # Converts a nested list of 2-element tuples or lists (eg: subtitle_filepaths) into a map
+  defp from_nested_list(list) do
+    Enum.reduce(list, %{}, fn
+      [key, value], acc -> Map.put(acc, key, value)
+      {key, value}, acc -> Map.put(acc, key, value)
+    end)
   end
 end
