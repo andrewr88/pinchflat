@@ -810,6 +810,38 @@ defmodule Pinchflat.SourcesTest do
     end
   end
 
+  describe "update_source/3 when testing min/max duration validations" do
+    test "fails if only max changes and it is less than the stored min" do
+      source = source_fixture(%{min_duration_seconds: 600})
+
+      assert {:error, changeset} = Sources.update_source(source, %{max_duration_seconds: 300})
+      assert "must be greater than minumum duration" in errors_on(changeset).max_duration_seconds
+    end
+
+    test "fails if only min changes and it is greater than the stored max" do
+      source = source_fixture(%{max_duration_seconds: 300})
+
+      assert {:error, changeset} = Sources.update_source(source, %{min_duration_seconds: 600})
+      assert "must be greater than minumum duration" in errors_on(changeset).max_duration_seconds
+    end
+
+    test "succeeds if only one bound changes and it is consistent with the stored bound" do
+      source = source_fixture(%{min_duration_seconds: 600})
+
+      assert {:ok, %Source{max_duration_seconds: 900}} = Sources.update_source(source, %{max_duration_seconds: 900})
+    end
+
+    test "does not block updates to other fields when min >= max is already stored" do
+      # Bypasses validation to simulate a source saved before this was enforced
+      source =
+        source_fixture()
+        |> change(%{min_duration_seconds: 600, max_duration_seconds: 300})
+        |> Repo.update!()
+
+      assert {:ok, %Source{}} = Sources.update_source(source, %{marked_for_deletion_at: DateTime.utc_now()})
+    end
+  end
+
   describe "delete_source/2" do
     test "it deletes the source" do
       source = source_fixture()

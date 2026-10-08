@@ -172,9 +172,13 @@ defmodule Pinchflat.Sources.Source do
 
   defp validate_title_regex(changeset), do: changeset
 
-  defp validate_min_and_max_durations(changeset) do
-    min_duration = get_change(changeset, :min_duration_seconds)
-    max_duration = get_change(changeset, :max_duration_seconds)
+  # Uses `get_field` so changing just one bound is still checked against the stored other one.
+  # Only runs when a bound changes so a source already stored with min >= max can still be
+  # updated in other ways (eg: marked for deletion)
+  defp validate_min_and_max_durations(%{changes: changes} = changeset)
+       when is_map_key(changes, :min_duration_seconds) or is_map_key(changes, :max_duration_seconds) do
+    min_duration = get_field(changeset, :min_duration_seconds)
+    max_duration = get_field(changeset, :max_duration_seconds)
 
     case {min_duration, max_duration} do
       {min, max} when is_nil(min) or is_nil(max) -> changeset
@@ -182,6 +186,8 @@ defmodule Pinchflat.Sources.Source do
       _ -> changeset
     end
   end
+
+  defp validate_min_and_max_durations(changeset), do: changeset
 
   defimpl Jason.Encoder, for: Source do
     def encode(value, opts) do
