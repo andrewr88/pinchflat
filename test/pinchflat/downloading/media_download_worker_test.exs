@@ -2,10 +2,12 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
   use Pinchflat.DataCase
 
   import Pinchflat.MediaFixtures
+  import Pinchflat.SourcesFixtures
 
   alias Pinchflat.Media
   alias Pinchflat.Sources
   alias Pinchflat.Utils.FilesystemUtils
+  alias Pinchflat.Downloading.DownloadingHelpers
   alias Pinchflat.Downloading.MediaDownloadWorker
 
   setup do
@@ -387,6 +389,76 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
     end
   end
 
+  describe "perform/1 when testing redownloads of existing media" do
+    setup %{media_item: media_item} do
+      {:ok, media_item} = Media.update_media_item(media_item, %{media_filepath: "foo.mp4"})
+
+      {:ok, %{media_item: media_item}}
+    end
+
+    test "downloads already-downloaded media without overwriting it", %{media_item: media_item} do
+      expect(UserScriptRunnerMock, :run, fn :media_pre_download, _ -> {:ok, "", 0} end)
+      expect(UserScriptRunnerMock, :run, fn :media_downloaded, _ -> {:ok, "", 0} end)
+
+      expect(YtDlpRunnerMock, :run, 3, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, opts, _ot, _addl ->
+          assert :no_force_overwrites in opts
+          refute :force_overwrites in opts
+
+          {:ok, render_metadata(:media_metadata)}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+      end)
+
+      # Runs the job exactly as the source's "Redownload Existing" action enqueues it
+      assert [{:ok, _}] = DownloadingHelpers.kickoff_redownload_for_existing_media(media_item.source)
+      assert [job] = all_enqueued(worker: MediaDownloadWorker, args: %{"id" => media_item.id})
+
+      assert :ok = perform_job(MediaDownloadWorker, job.args)
+    end
+
+    test "doesn't redownload if the source is set to not download", %{media_item: media_item} do
+      expect(YtDlpRunnerMock, :run, 0, fn _url, :download, _opts, _ot, _addl -> :ok end)
+      expect(UserScriptRunnerMock, :run, 0, fn _event, _data -> {:ok, "", 0} end)
+
+      Sources.update_source(media_item.source, %{download_media: false})
+
+      perform_job(MediaDownloadWorker, %{id: media_item.id, redownload?: true})
+    end
+
+    test "doesn't redownload if the media item is set to not download", %{media_item: media_item} do
+      expect(YtDlpRunnerMock, :run, 0, fn _url, :download, _opts, _ot, _addl -> :ok end)
+      expect(UserScriptRunnerMock, :run, 0, fn _event, _data -> {:ok, "", 0} end)
+
+      Media.update_media_item(media_item, %{prevent_download: true})
+
+      perform_job(MediaDownloadWorker, %{id: media_item.id, redownload?: true})
+    end
+
+    test "doesn't download media that is no longer downloaded and isn't pending" do
+      expect(YtDlpRunnerMock, :run, 0, fn _url, :download, _opts, _ot, _addl -> :ok end)
+
+      source = source_fixture(%{title_filter_regex: "(?i)^FOO$"})
+      media_item = media_item_fixture(%{source_id: source.id, media_filepath: nil})
+
+      perform_job(MediaDownloadWorker, %{id: media_item.id, redownload?: true})
+    end
+
+    test "keeps the media item's redownloaded_at", %{media_item: media_item} do
+      {:ok, media_item} = Media.update_media_item(media_item, %{media_redownloaded_at: now_minus(5, :days)})
+
+      perform_job(MediaDownloadWorker, %{id: media_item.id, redownload?: true})
+      updated_media_item = Repo.reload!(media_item)
+
+      assert updated_media_item.media_downloaded_at
+      assert updated_media_item.media_redownloaded_at == media_item.media_redownloaded_at
+    end
+  end
+
   describe "perform/1 when testing user script callbacks" do
     test "calls the media_pre_download user script runner", %{media_item: media_item} do
       expect(UserScriptRunnerMock, :run, fn :media_pre_download, data ->
@@ -415,6 +487,35 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
       expect(UserScriptRunnerMock, :run, fn :media_downloaded, _ -> {:ok, :no_executable} end)
 
       assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+      media_item = Repo.reload!(media_item)
+
+      assert media_item.media_filepath
+      refute media_item.prevent_download
+    end
+
+    test "doesn't run the pre-download script if the media item isn't pending download", %{media_item: media_item} do
+      expect(UserScriptRunnerMock, :run, 0, fn _event, _data -> {:ok, "", 1} end)
+
+      {:ok, media_item} = Media.update_media_item(media_item, %{media_filepath: "foo.mp4"})
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+      refute Repo.reload!(media_item).prevent_download
+    end
+
+    test "doesn't run the pre-download script if the source is set to not download", %{media_item: media_item} do
+      expect(UserScriptRunnerMock, :run, 0, fn _event, _data -> {:ok, "", 1} end)
+
+      Sources.update_source(media_item.source, %{download_media: false})
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+      refute Repo.reload!(media_item).prevent_download
+    end
+
+    test "runs the pre-download script for forced downloads without letting it prevent them", %{media_item: media_item} do
+      expect(UserScriptRunnerMock, :run, fn :media_pre_download, _ -> {:ok, "", 1} end)
+      expect(UserScriptRunnerMock, :run, fn :media_downloaded, _ -> {:ok, "", 0} end)
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id, force: true})
       media_item = Repo.reload!(media_item)
 
       assert media_item.media_filepath

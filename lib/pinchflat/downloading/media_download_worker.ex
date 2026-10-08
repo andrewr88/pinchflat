@@ -40,6 +40,9 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
       re-downloads media, including the video
     - `quality_upgrade?`: re-downloads media, including the video. Does not force download
       if the source is set to not download media
+    - `redownload?`: also downloads media that has already been downloaded, without overwriting
+      existing files (eg: to fetch thumbnails or subtitles that have since been enabled). Does not
+      force download if the source is set to not download media
 
   Returns :ok | {:error, any, ...any}
   """
@@ -47,11 +50,17 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
   def perform(%Oban.Job{args: %{"id" => media_item_id} = args}) do
     should_force = Map.get(args, "force", false)
     is_quality_upgrade = Map.get(args, "quality_upgrade?", false)
+    is_redownload = Map.get(args, "redownload?", false)
 
-    media_item = fetch_and_run_prevent_download_user_script(media_item_id)
+    media_item =
+      media_item_id
+      |> Media.get_media_item!()
+      |> Repo.preload(:source)
 
-    if should_download_media?(media_item, should_force, is_quality_upgrade) do
-      download_media_and_schedule_jobs(media_item, is_quality_upgrade, should_force)
+    # The pre-download user script only runs once we know the media would otherwise be downloaded
+    if should_download_media?(media_item, should_force, is_quality_upgrade, is_redownload) &&
+         pre_download_user_script_allows?(media_item, should_force) do
+      download_media_and_schedule_jobs(media_item, is_quality_upgrade, should_force, is_redownload)
     else
       :ok
     end
@@ -62,33 +71,45 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
 
   # If this is a quality upgrade, only check if the source is set to download media
   # or that the media item's download hasn't been prevented
-  defp should_download_media?(media_item, should_force, true = _is_quality_upgrade) do
+  defp should_download_media?(media_item, should_force, true = _is_quality_upgrade, _is_redownload) do
     (media_item.source.download_media && !media_item.prevent_download) || should_force
   end
 
-  # If it's not a quality upgrade, additionally check if the media item is pending download
-  defp should_download_media?(media_item, should_force, _is_quality_upgrade) do
+  # If it's not a quality upgrade, additionally check if the media item is pending download.
+  # A redownload of existing media also accepts media that's already downloaded (which is never pending)
+  defp should_download_media?(media_item, should_force, _is_quality_upgrade, is_redownload) do
     source = media_item.source
-    is_pending = Media.pending_download?(media_item)
+    is_downloaded = media_item.media_filepath != nil
+    is_eligible = (is_redownload && is_downloaded) || Media.pending_download?(media_item)
 
-    (is_pending && source.download_media && !media_item.prevent_download) || should_force
+    (is_eligible && source.download_media && !media_item.prevent_download) || should_force
   end
 
   # If a user script exists and, when run, returns a non-zero exit code, prevent this and all future downloads
   # of the media item.
-  defp fetch_and_run_prevent_download_user_script(media_item_id) do
-    media_item = Media.get_media_item!(media_item_id)
+  #
+  # Forced downloads are an explicit request from the user and already override `prevent_download`, so the
+  # script still runs (keeping it paired with the `media_downloaded` script) but its veto is ignored and not
+  # saved. Saving it would quietly drop media the user just downloaded from quality upgrades and redownloads.
+  # Any later download that isn't forced runs the script again, so it can still veto those.
+  defp pre_download_user_script_allows?(media_item, should_force) do
+    case {run_user_script(:media_pre_download, media_item), should_force} do
+      {{:ok, _, exit_code}, true} when exit_code != 0 ->
+        Logger.info("Pre-download user script vetoed media item ##{media_item.id} but it's forced. Downloading anyway")
 
-    {:ok, media_item} =
-      case run_user_script(:media_pre_download, media_item) do
-        {:ok, _, exit_code} when exit_code != 0 -> Media.update_media_item(media_item, %{prevent_download: true})
-        _ -> {:ok, media_item}
-      end
+        true
 
-    Repo.preload(media_item, :source)
+      {{:ok, _, exit_code}, _} when exit_code != 0 ->
+        {:ok, _} = Media.update_media_item(media_item, %{prevent_download: true})
+
+        false
+
+      _ ->
+        true
+    end
   end
 
-  defp download_media_and_schedule_jobs(media_item, is_quality_upgrade, should_force) do
+  defp download_media_and_schedule_jobs(media_item, is_quality_upgrade, should_force, is_redownload) do
     overwrite_behaviour = if should_force || is_quality_upgrade, do: :force_overwrites, else: :no_force_overwrites
     override_opts = [overwrite_behaviour: overwrite_behaviour]
 
@@ -97,7 +118,7 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
         {:ok, updated_media_item} =
           Media.update_media_item(downloaded_media_item, %{
             media_size_bytes: compute_media_filesize(downloaded_media_item),
-            media_redownloaded_at: get_redownloaded_at(is_quality_upgrade)
+            media_redownloaded_at: get_redownloaded_at(downloaded_media_item, is_quality_upgrade, is_redownload)
           })
 
         :ok = FileSyncing.delete_outdated_files(media_item, updated_media_item)
@@ -123,8 +144,11 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
     end
   end
 
-  defp get_redownloaded_at(true), do: DateTime.utc_now()
-  defp get_redownloaded_at(_), do: nil
+  # Only quality upgrades set this, and it stops media from being upgraded again. A redownload of existing
+  # media doesn't overwrite the existing media file so it keeps the current value. Other downloads clear it
+  defp get_redownloaded_at(_media_item, true = _is_quality_upgrade, _is_redownload), do: DateTime.utc_now()
+  defp get_redownloaded_at(media_item, _is_quality_upgrade, true = _is_redownload), do: media_item.media_redownloaded_at
+  defp get_redownloaded_at(_media_item, _is_quality_upgrade, _is_redownload), do: nil
 
   defp action_on_error(message) do
     # This will attempt re-download at the next indexing, but it won't be retried
