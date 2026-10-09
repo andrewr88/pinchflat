@@ -88,16 +88,23 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorker do
 
   defp fetch_source_metadata_and_images(series_directory, source) do
     metadata_directory = MetadataFileHelpers.metadata_directory_for(source)
+    # yt-dlp downloads the source's images here. They're copied to where they're stored, then
+    # it's deleted (even if something fails)
+    tmp_image_directory = Path.join(tmp_directory(), StringUtils.random_string(16))
 
-    {:ok, metadata} = fetch_metadata_for_source(source)
-    metadata_image_attrs = SourceImageParser.store_source_images(metadata_directory, metadata)
+    try do
+      {:ok, metadata} = fetch_metadata_for_source(source, tmp_image_directory)
+      metadata_image_attrs = SourceImageParser.store_source_images(metadata_directory, metadata)
 
-    if source.media_profile.download_source_images && series_directory do
-      source_image_attrs = SourceImageParser.store_source_images(series_directory, metadata)
+      if source.media_profile.download_source_images && series_directory do
+        source_image_attrs = SourceImageParser.store_source_images(series_directory, metadata)
 
-      {metadata, source_image_attrs, metadata_image_attrs}
-    else
-      {metadata, %{}, metadata_image_attrs}
+        {metadata, source_image_attrs, metadata_image_attrs}
+      else
+        {metadata, %{}, metadata_image_attrs}
+      end
+    after
+      File.rm_rf(tmp_image_directory)
     end
   end
 
@@ -151,8 +158,8 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorker do
     end)
   end
 
-  defp fetch_metadata_for_source(source) do
-    tmp_output_path = "#{tmp_directory()}/#{StringUtils.random_string(16)}/source_image.%(ext)S"
+  defp fetch_metadata_for_source(source, tmp_image_directory) do
+    tmp_output_path = Path.join(tmp_image_directory, "source_image.%(ext)S")
     base_opts = [convert_thumbnails: "jpg", output: tmp_output_path]
     should_use_cookies = Sources.use_cookies?(source, :metadata)
 

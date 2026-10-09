@@ -4,8 +4,8 @@ defmodule Pinchflat.Media.MediaItem do
   """
 
   use Ecto.Schema
-  use Pinchflat.Media.MediaQuery
 
+  import Ecto.Query, warn: false
   import Ecto.Changeset
   import Pinchflat.Utils.ChangesetUtils
 
@@ -13,6 +13,7 @@ defmodule Pinchflat.Media.MediaItem do
   alias Pinchflat.Repo
   alias Pinchflat.Tasks.Task
   alias Pinchflat.Sources.Source
+  alias Pinchflat.Media.MediaQuery
   alias Pinchflat.Metadata.MediaMetadata
   alias Pinchflat.Media.MediaItemsSearchIndex
 

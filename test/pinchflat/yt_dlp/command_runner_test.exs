@@ -47,6 +47,36 @@ defmodule Pinchflat.YtDlp.CommandRunnerTest do
 
       assert String.contains?(output, "--print-to-file %(id)s /tmp/yt-dlp-output.json")
     end
+
+    test "deletes the output file it generated once the command succeeds" do
+      assert {:ok, output} = Runner.run(@media_url, :foo, [], "%(id)s")
+
+      refute File.exists?(printed_to_filepath(output))
+    end
+
+    test "deletes the output file it generated when the command fails" do
+      wrap_executable(Path.join(File.cwd!(), "test/support/scripts/yt-dlp-mocks/failing_repeater.sh"), fn ->
+        assert {:error, output, 1} = Runner.run(@media_url, :foo, [], "%(id)s")
+
+        refute File.exists?(printed_to_filepath(output))
+      end)
+    end
+
+    test "keeps the output file when the caller supplies it" do
+      output_filepath = FilesystemUtils.generate_metadata_tmpfile(:json)
+
+      assert {:ok, _} = Runner.run(@media_url, :foo, [], "%(id)s", output_filepath: output_filepath)
+      assert File.exists?(output_filepath)
+
+      # Callers can read the file after a failure, eg: to recover a download's output
+      wrap_executable(Path.join(File.cwd!(), "test/support/scripts/yt-dlp-mocks/failing_repeater.sh"), fn ->
+        assert {:error, _, 1} = Runner.run(@media_url, :foo, [], "%(id)s", output_filepath: output_filepath)
+      end)
+
+      assert File.exists?(output_filepath)
+
+      File.rm!(output_filepath)
+    end
   end
 
   describe "run/4 when testing external file options" do
@@ -212,5 +242,12 @@ defmodule Pinchflat.YtDlp.CommandRunnerTest do
 
   def reset_executable do
     Application.put_env(:pinchflat, :yt_dlp_executable, @original_executable)
+  end
+
+  # The mock executables repeat their args, which include the file yt-dlp prints to
+  defp printed_to_filepath(output) do
+    [_, filepath] = Regex.run(~r/--print-to-file \S+ (\S+)/, output)
+
+    filepath
   end
 end

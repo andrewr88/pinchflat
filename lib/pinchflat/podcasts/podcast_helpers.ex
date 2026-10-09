@@ -15,14 +15,16 @@ defmodule Pinchflat.Podcasts.PodcastHelpers do
   @default_limit 2_000
 
   @doc """
-  Returns a list of sources that are not marked for deletion.
+  Returns a list of sources that are not being deleted: neither they nor their
+  media profile (whose deletion deletes them too) are marked for deletion.
 
   Returns: [%Source{}]
   """
   def opml_sources() do
     SourcesQuery.new()
+    |> join(:inner, [s], mp in assoc(s, :media_profile))
     |> select([s], %{custom_name: s.custom_name, uuid: s.uuid})
-    |> where([s], is_nil(s.marked_for_deletion_at))
+    |> where([s, mp], is_nil(s.marked_for_deletion_at) and is_nil(mp.marked_for_deletion_at))
     |> order_by(asc: :custom_name)
     |> Repo.all()
   end

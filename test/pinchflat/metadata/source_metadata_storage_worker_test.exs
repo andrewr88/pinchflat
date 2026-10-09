@@ -293,6 +293,57 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorkerTest do
     end
   end
 
+  describe "perform/1 when cleaning up the downloaded source images" do
+    test "deletes the temporary directory the images are downloaded to once they're stored" do
+      test_pid = self()
+
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_source_details, _opts, _ot, _addl ->
+          {:ok, source_details_return_fixture()}
+
+        _url, :get_source_metadata, opts, _ot, _addl ->
+          tmp_image_directory = Path.dirname(Keyword.fetch!(opts, :output))
+          send(test_pid, {:tmp_image_directory, tmp_image_directory})
+
+          {:ok, download_source_images_to(tmp_image_directory)}
+      end)
+
+      source = source_fixture()
+
+      perform_job(SourceMetadataStorageWorker, %{id: source.id})
+      source = Repo.preload(Repo.reload(source), :metadata)
+
+      assert_received {:tmp_image_directory, tmp_image_directory}
+      refute File.exists?(tmp_image_directory)
+      assert File.exists?(source.metadata.poster_filepath)
+
+      Sources.delete_source(source, delete_files: true)
+    end
+
+    test "deletes the temporary directory the images are downloaded to if fetching the metadata fails" do
+      test_pid = self()
+
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_source_details, _opts, _ot, _addl ->
+          {:ok, source_details_return_fixture()}
+
+        _url, :get_source_metadata, opts, _ot, _addl ->
+          tmp_image_directory = Path.dirname(Keyword.fetch!(opts, :output))
+          send(test_pid, {:tmp_image_directory, tmp_image_directory})
+          FilesystemUtils.write_p!(Path.join(tmp_image_directory, "source_image.jpg"), "partial image")
+
+          {:error, "Unable to download the images", 1}
+      end)
+
+      source = source_fixture()
+
+      assert_raise MatchError, fn -> perform_job(SourceMetadataStorageWorker, %{id: source.id}) end
+
+      assert_received {:tmp_image_directory, tmp_image_directory}
+      refute File.exists?(tmp_image_directory)
+    end
+  end
+
   describe "perform/1 when determining the series_directory" do
     test "sets the series directory based on the returned media filepath" do
       stub(YtDlpRunnerMock, :run, fn
@@ -569,5 +620,25 @@ defmodule Pinchflat.Metadata.SourceMetadataStorageWorkerTest do
       _url, :get_source_metadata, _opts, _ot, _addl ->
         {:ok, source_metadata}
     end)
+  end
+
+  # Does what yt-dlp does: downloads the source's images to the directory and returns the
+  # source's metadata, which includes where each image is
+  defp download_source_images_to(directory) do
+    metadata = render_parsed_metadata(:channel_source_metadata)
+
+    thumbnails =
+      Enum.map(metadata["thumbnails"], fn
+        %{"filepath" => filepath} = thumbnail when is_binary(filepath) ->
+          downloaded_filepath = Path.join(directory, Path.basename(filepath))
+          FilesystemUtils.cp_p!(filepath, downloaded_filepath)
+
+          Map.put(thumbnail, "filepath", downloaded_filepath)
+
+        thumbnail ->
+          thumbnail
+      end)
+
+    Phoenix.json_library().encode!(Map.put(metadata, "thumbnails", thumbnails))
   end
 end

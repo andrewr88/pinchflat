@@ -3,7 +3,9 @@ defmodule Pinchflat.Podcasts.PodcastHelpersTest do
 
   import Pinchflat.SourcesFixtures
   import Pinchflat.MediaFixtures
+  import Pinchflat.ProfilesFixtures
 
+  alias Pinchflat.Profiles
   alias Pinchflat.Podcasts.PodcastHelpers
 
   describe "opml_sources" do
@@ -12,6 +14,16 @@ defmodule Pinchflat.Podcasts.PodcastHelpersTest do
       source_fixture(%{marked_for_deletion_at: DateTime.utc_now()})
       assert [found_source] = PodcastHelpers.opml_sources()
       assert found_source.custom_name == source.custom_name
+      assert found_source.uuid == source.uuid
+    end
+
+    test "leaves out sources whose media profile is marked for deletion" do
+      source = source_fixture()
+      media_profile = media_profile_fixture()
+      source_fixture(%{media_profile_id: media_profile.id})
+      {:ok, _} = Profiles.update_media_profile(media_profile, %{marked_for_deletion_at: DateTime.utc_now()})
+
+      assert [found_source] = PodcastHelpers.opml_sources()
       assert found_source.uuid == source.uuid
     end
 
